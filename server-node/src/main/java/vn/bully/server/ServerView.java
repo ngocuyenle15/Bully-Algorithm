@@ -10,7 +10,7 @@ import javafx.geometry.Insets;
 import javafx.stage.Stage;
 import vn.bully.common.FxSupport;
 
-public final class ServerView {
+public final class  ServerView {
     public static void open(ServerNode node, Runnable stop) {
         Platform.startup(() -> {
             var info = new TextArea(); info.setEditable(false); info.setPrefRowCount(13);
