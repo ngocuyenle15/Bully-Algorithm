@@ -32,7 +32,7 @@ class DistributedIntegrationTest {
         Path jar = root.resolve(project + "/target/" + project + "-1.0.0-SNAPSHOT.jar");
         assertTrue(Files.isRegularFile(jar), "Build jar first: " + jar);
         String executable = System.getProperty("os.name").toLowerCase().contains("win") ? "java.exe" : "java";
-        var command = new ArrayList<>(List.of(Path.of(System.getProperty("java.home"), "bin", executable).toString(), "-jar", jar.toString(), "--headless"));
+        var command = new ArrayList<>(List.of(Path.of(System.getProperty("java.home"), "bin", executable).toString(), "-jar", jar.toString(), "--headless", "--bind-address", "127.0.0.1"));
         command.addAll(List.of(args));
         Process process = new ProcessBuilder(command).redirectErrorStream(true).redirectOutput(logs.resolve(name + ".log").toFile()).start();
         processes.add(process); return process;

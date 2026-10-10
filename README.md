@@ -121,3 +121,27 @@ Không tăng heartbeat/election timeout tùy ý mà giữ lease quá ngắn. Khi
 - `docs/TESTING.md`: tình huống kiểm thử và kịch bản demo.
 
 Phạm vi LAN tin cậy, không có xác thực tài khoản hay TLS. Worker crash mất trạng thái RAM; không phục hồi Worker, không đồng bộ hàng đợi, không database. Kiểm thử tự động thực hiện trên một máy Windows; triển khai nhiều máy LAN cần kiểm tra cấu hình mạng/firewall thực tế.
+
+## Cấu hình interface mạng và cổng
+
+Sửa file trong thư mục config của từng project hoặc truyền tham số khi chạy JAR. Tham số dòng lệnh ghi đè file cấu hình.
+
+| Project | Interface/IP cục bộ | Cổng |
+| --- | --- | --- |
+| server-node | bind-address | port: TCP lắng nghe, mặc định theo node 9001/9002/9003 |
+| document-worker | bind-address | port: gRPC lắng nghe, mặc định 9100 |
+| client-node | bind-address: IP nguồn cho TCP và gRPC | local-port: TCP nguồn; grpc-local-port: gRPC nguồn; mặc định cả hai là 0 |
+
+bind-address là địa chỉ IP được gán cho card mạng trên máy chạy process, ví dụ 192.168.1.11. Có thể xem bằng ipconfig. Giá trị 0.0.0.0 cho phép Server/Worker lắng nghe trên mọi interface; với kết nối đi, hệ điều hành chọn interface phù hợp. Địa chỉ không thuộc máy cục bộ bị từ chối khi khởi động.
+
+Client truy vấn Server/Worker nên không có socket lắng nghe. Cổng nguồn 0 để hệ điều hành cấp tự động là cấu hình khuyến nghị; cổng TCP nguồn cố định có thể gặp xung đột hoặc TIME_WAIT khi kết nối lại liên tục.
+
+Ví dụ ghi đè khi chạy JAR:
+
+```powershell
+java -jar server-node/target/server-node-1.0.0-SNAPSHOT.jar --config server-node/config/server-1.properties --bind-address 192.168.1.11 --port 9001
+java -jar document-worker/target/document-worker-1.0.0-SNAPSHOT.jar --config document-worker/config/worker.properties --bind-address 192.168.1.10 --port 9100
+java -jar client-node/target/client-node-1.0.0-SNAPSHOT.jar --config client-node/config/client-1.properties --bind-address 192.168.1.20 --local-port 0 --grpc-local-port 0
+```
+
+Khi chạy LAN, cập nhật servers và worker thành IP/cổng đích thực tế mà các máy khác truy cập được. Không dùng 0.0.0.0 làm địa chỉ đích. Cổng của mỗi node trong servers phải khớp port lắng nghe của node đó.

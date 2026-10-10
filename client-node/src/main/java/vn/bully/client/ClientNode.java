@@ -4,6 +4,7 @@ import vn.bully.client.support.*;
 import vn.bully.client.rpc.*;
 import com.google.protobuf.ByteString;
 import java.io.*;
+import java.net.InetAddress;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
@@ -14,6 +15,8 @@ public final class ClientNode implements AutoCloseable {
     private final String id, username;
     private final List<NodeAddress> servers;
     private final WorkerClient worker;
+    private final InetAddress bindAddress;
+    private final int localPort;
     private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor();
     public final EventLog log;
     private volatile NodeAddress coordinator;
@@ -25,7 +28,10 @@ public final class ClientNode implements AutoCloseable {
 
     public ClientNode(Config config) {
         id = config.get("id", UUID.randomUUID().toString()); username = config.get("username", "Client " + id);
-        servers = config.nodes(); worker = new WorkerClient(config.worker()); log = new EventLog("Client-" + id);
+        bindAddress = config.bindAddress(); localPort = config.port("local-port", 0, true);
+        servers = config.nodes(); worker = new WorkerClient(config.worker(), bindAddress, config.port("grpc-local-port", 0, true));
+        log = new EventLog("Client-" + id);
+        log.info("Client network interface=" + bindAddress.getHostAddress() + " TCP local-port=" + localPort);
         timer.scheduleWithFixedDelay(this::tick, 0, 700, TimeUnit.MILLISECONDS);
     }
     public synchronized Snapshot snapshot() {
@@ -46,7 +52,7 @@ public final class ClientNode implements AutoCloseable {
     private NodeAddress discover() {
         for (var server : servers) {
             try {
-                var response = Wire.call(server, Wire.message(MessageType.GET_COORDINATOR, UUID.randomUUID().toString(), id, Map.of()), 700);
+                var response = Wire.call(server, Wire.message(MessageType.GET_COORDINATOR, UUID.randomUUID().toString(), id, Map.of()), 700, bindAddress, localPort);
                 if (response.type() == MessageType.COORDINATOR_INFO)
                     return new NodeAddress(Wire.integer(response, "id"), Wire.string(response, "host"), Wire.integer(response, "port"));
             } catch (IOException ignored) { }
@@ -81,7 +87,7 @@ public final class ClientNode implements AutoCloseable {
         MessageType type = currentCommand.equals("CANCEL") ? MessageType.ACCESS_CANCEL : currentCommand.equals("RELEASE")
             ? MessageType.ACCESS_RELEASE : currentRequest.isEmpty() ? MessageType.GET_COORDINATOR : MessageType.ACCESS_STATUS;
         try {
-            var response = Wire.call(address, Wire.message(type, currentRequest.isEmpty() ? UUID.randomUUID().toString() : currentRequest, id, payload), 4000);
+            var response = Wire.call(address, Wire.message(type, currentRequest.isEmpty() ? UUID.randomUUID().toString() : currentRequest, id, payload), 4000, bindAddress, localPort);
             synchronized (this) {
                 connection = "CONNECTED";
                 if (response.type() == MessageType.ELECTION_IN_PROGRESS) {

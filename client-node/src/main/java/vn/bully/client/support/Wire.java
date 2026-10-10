@@ -14,7 +14,14 @@ public final class Wire {
         return new TcpMessage(type, requestId, sender, payload);
     }
     public static TcpMessage call(NodeAddress node, TcpMessage message, int timeout) throws IOException {
+        return call(node, message, timeout, null, 0);
+    }
+    public static TcpMessage call(NodeAddress node, TcpMessage message, int timeout, InetAddress localAddress, int localPort) throws IOException {
         try (var socket = new Socket()) {
+            if (localAddress != null) {
+                socket.setReuseAddress(true);
+                socket.bind(new InetSocketAddress(localAddress, localPort));
+            }
             socket.connect(new InetSocketAddress(node.host(), node.port()), timeout);
             socket.setSoTimeout(timeout);
             write(socket, message);

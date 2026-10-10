@@ -12,6 +12,7 @@ public final class ServerNode implements AutoCloseable {
     private final int id, heartbeatTimeout, failureLimit, electionTimeout;
     private final List<NodeAddress> nodes;
     private final WorkerClient worker;
+    private final InetAddress bindAddress;
     public final EventLog log;
     private final ServerSocket listener;
     private final ExecutorService connections = Executors.newVirtualThreadPerTaskExecutor();
@@ -33,13 +34,17 @@ public final class ServerNode implements AutoCloseable {
         heartbeatTimeout = config.number("heartbeat-timeout-ms", 1000);
         failureLimit = config.number("heartbeat-failures", 3);
         electionTimeout = config.number("election-ms", 2000);
-        worker = new WorkerClient(config.worker()); log = new EventLog("Server-" + id);
-        listener = new ServerSocket(config.number("port", self.port()));
+        bindAddress = config.bindAddress();
+        int port = config.port("port", self.port(), false);
+        listener = new ServerSocket();
+        listener.bind(new InetSocketAddress(bindAddress, port));
+        worker = new WorkerClient(config.worker(), bindAddress, 0); log = new EventLog("Server-" + id);
         connections.submit(this::accept);
         scheduler.scheduleWithFixedDelay(this::tick, 0, config.number("heartbeat-ms", 1000), TimeUnit.MILLISECONDS);
-        log.info("Server started id=" + id + " port=" + listener.getLocalPort());
+        log.info("Server started id=" + id + " listening=" + listener.getLocalSocketAddress());
     }
     public int id() { return id; }
+    public InetSocketAddress listenAddress() { return (InetSocketAddress) listener.getLocalSocketAddress(); }
     public String display() { return display; }
     private void accept() {
         while (running) {
@@ -185,7 +190,7 @@ public final class ServerNode implements AutoCloseable {
                 boolean higher = false;
                 for (var node : nodes) if (node.id() > id) {
                     try {
-                        var response = Wire.call(node, Wire.message(MessageType.ELECTION, UUID.randomUUID().toString(), Integer.toString(id), Map.of()), heartbeatTimeout);
+                        var response = Wire.call(node, Wire.message(MessageType.ELECTION, UUID.randomUUID().toString(), Integer.toString(id), Map.of()), heartbeatTimeout, bindAddress, 0);
                         alive.put(node.id(), true);
                         if (response.type() == MessageType.ELECTION_OK) { higher = true; log.info("Election OK from=" + node.id()); }
                     } catch (IOException e) { alive.put(node.id(), false); }
@@ -213,7 +218,7 @@ public final class ServerNode implements AutoCloseable {
     private void announce() {
         for (var node : nodes) if (node.id() != id) {
             try { Wire.call(node, Wire.message(MessageType.COORDINATOR, UUID.randomUUID().toString(), Integer.toString(id),
-                Map.of("id", id, "generation", generation)), heartbeatTimeout); }
+                Map.of("id", id, "generation", generation)), heartbeatTimeout, bindAddress, 0); }
             catch (IOException ignored) { }
         }
         announcedGeneration = generation;
@@ -233,7 +238,7 @@ public final class ServerNode implements AutoCloseable {
                 else {
                     var address = nodes.stream().filter(n -> n.id() == coordinatorId).findFirst().orElseThrow();
                     try {
-                        var response = Wire.call(address, Wire.message(MessageType.HEARTBEAT, UUID.randomUUID().toString(), Integer.toString(id), Map.of()), heartbeatTimeout);
+                        var response = Wire.call(address, Wire.message(MessageType.HEARTBEAT, UUID.randomUUID().toString(), Integer.toString(id), Map.of()), heartbeatTimeout, bindAddress, 0);
                         if (response.type() != MessageType.HEARTBEAT_ACK) throw new IOException("Coordinator is not active");
                         failures = 0; alive.put(address.id(), true);
                     } catch (IOException e) {
@@ -245,7 +250,7 @@ public final class ServerNode implements AutoCloseable {
             if (++ticks % 2 == 0) {
                 for (var node : nodes) if (node.id() != id) {
                     try {
-                        var response = Wire.call(node, Wire.message(MessageType.GET_COORDINATOR, UUID.randomUUID().toString(), Integer.toString(id), Map.of()), heartbeatTimeout);
+                        var response = Wire.call(node, Wire.message(MessageType.GET_COORDINATOR, UUID.randomUUID().toString(), Integer.toString(id), Map.of()), heartbeatTimeout, bindAddress, 0);
                         alive.put(node.id(), true);
                         if (coordinator && node.id() > id) startElection();
                         if (!coordinator && !election.get() && response.type() == MessageType.COORDINATOR_INFO) {
@@ -258,7 +263,7 @@ public final class ServerNode implements AutoCloseable {
             }
             synchronized (this) {
                 var lines = new StringBuilder("Server " + id + " | " + (coordinator ? "COORDINATOR" : election.get() ? "ELECTING" : "STANDBY")
-                    + " | port " + listener.getLocalPort() + "\nCoordinator: " + coordinatorId + " | generation: " + generation + "\n\nServers:\n");
+                    + " | listen " + listener.getLocalSocketAddress() + "\nCoordinator: " + coordinatorId + " | generation: " + generation + "\n\nServers:\n");
                 for (var node : nodes) lines.append(node).append(" ").append(node.id() == id || alive.getOrDefault(node.id(), false) ? "ALIVE" : "OFFLINE")
                     .append(node.id() == coordinatorId ? " COORDINATOR" : " STANDBY").append('\n');
                 lines.append("\nRequest queue:\n"); int position = 0;
