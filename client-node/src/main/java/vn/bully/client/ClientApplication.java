@@ -1,6 +1,6 @@
 package vn.bully.client;
 
-import vn.bully.common.Config;
+import vn.bully.client.support.Config;
 import java.util.concurrent.CountDownLatch;
 
 public final class ClientApplication {

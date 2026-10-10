@@ -3,7 +3,7 @@ package vn.bully.client;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import static org.junit.jupiter.api.Assertions.*;
-import vn.bully.common.*;
+import vn.bully.client.support.*;
 import javafx.application.Platform;
 import javafx.stage.*;
 import java.nio.file.*;

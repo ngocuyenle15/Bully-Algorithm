@@ -1,8 +1,8 @@
 package vn.bully.worker;
 
 import io.grpc.Status;
-import vn.bully.common.*;
-import vn.bully.common.rpc.*;
+import vn.bully.worker.support.*;
+import vn.bully.worker.rpc.*;
 import java.security.SecureRandom;
 import java.util.*;
 import java.util.function.LongSupplier;

@@ -2,8 +2,8 @@ package vn.bully.worker;
 
 import org.junit.jupiter.api.*;
 import static org.junit.jupiter.api.Assertions.*;
-import vn.bully.common.*;
-import vn.bully.common.rpc.*;
+import vn.bully.worker.support.*;
+import vn.bully.worker.rpc.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;

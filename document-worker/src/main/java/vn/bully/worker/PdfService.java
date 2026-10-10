@@ -5,7 +5,7 @@ import org.apache.pdfbox.pdmodel.*;
 import org.apache.pdfbox.pdmodel.font.*;
 import org.apache.pdfbox.util.Matrix;
 import org.apache.pdfbox.multipdf.PDFMergerUtility;
-import vn.bully.common.rpc.PdfRequest;
+import vn.bully.worker.rpc.PdfRequest;
 import java.io.*;
 import java.util.ArrayList;
 

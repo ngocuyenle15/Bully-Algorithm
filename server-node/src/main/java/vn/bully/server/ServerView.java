@@ -8,7 +8,7 @@ import javafx.scene.control.*;
 import javafx.scene.layout.VBox;
 import javafx.geometry.Insets;
 import javafx.stage.Stage;
-import vn.bully.common.FxSupport;
+import vn.bully.server.support.FxSupport;
 
 public final class  ServerView {
     public static void open(ServerNode node, Runnable stop) {

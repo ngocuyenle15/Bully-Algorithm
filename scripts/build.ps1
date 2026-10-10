@@ -3,8 +3,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $projectRoot
 try {
-    & mvn -f common/pom.xml install
-    if ($LASTEXITCODE -ne 0) { throw 'Build common failed' }
+    & (Join-Path $PSScriptRoot 'check-protocol.ps1')
     foreach ($project in @('server-node', 'client-node', 'document-worker')) {
         & mvn -f "$project/pom.xml" package
         if ($LASTEXITCODE -ne 0) { throw "Build $project failed" }

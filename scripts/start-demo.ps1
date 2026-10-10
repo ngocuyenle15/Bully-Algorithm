@@ -22,7 +22,7 @@ $launchedProcesses = @()
 try {
     foreach ($app in $applications) {
         $jarPath = Join-Path $projectRoot "$($app.Project)/target/$($app.Project)-1.0.0-SNAPSHOT.jar"
-        $configPath = Join-Path $projectRoot "config/$($app.Config).properties"
+        $configPath = Join-Path $projectRoot "$($app.Project)/config/$($app.Config).properties"
         $launchArguments = @('-jar', "`"$jarPath`"", '--config', "`"$configPath`"")
         if ($Headless) { $launchArguments += '--headless' }
         $process = Start-Process -FilePath $javaCommand -ArgumentList $launchArguments -WorkingDirectory $projectRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $logRoot "$($app.Config).out.log") -RedirectStandardError (Join-Path $logRoot "$($app.Config).err.log")

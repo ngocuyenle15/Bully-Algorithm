@@ -1,6 +1,6 @@
 package vn.bully.server;
 
-import vn.bully.common.Config;
+import vn.bully.server.support.Config;
 import java.util.concurrent.CountDownLatch;
 
 public final class ServerApplication {

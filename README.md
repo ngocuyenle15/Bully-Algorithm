@@ -1,6 +1,6 @@
 # Hệ thống xử lý tài liệu phân tán
 
-Bốn project Maven độc lập, Java 21: `common`, `server-node`, `client-node`, `document-worker`. Mỗi project có POM riêng; ba ứng dụng dùng thư viện common cài trong Maven local repository. Không có parent POM ở thư mục gốc.
+Ba project Maven độc lập, Java 21: `server-node`, `client-node`, `document-worker`. Mỗi project chứa mã nguồn hỗ trợ, Protobuf, cấu hình và POM riêng. Có thể copy một project sang thư mục/máy khác rồi build trực tiếp bằng `mvn clean package`; không phụ thuộc project hoặc artifact nội bộ khác.
 
 ## Chức năng đã triển khai
 
@@ -22,16 +22,15 @@ Cần JDK 21, Maven và mạng để tải dependency lần đầu. Từ thư m�
 ./scripts/build.ps1
 ```
 
-Hoặc build từng project theo thứ tự:
+Hoặc build từng project theo thứ tự bất kỳ:
 
 ```powershell
-mvn -f common/pom.xml install
 mvn -f server-node/pom.xml package
 mvn -f client-node/pom.xml package
 mvn -f document-worker/pom.xml package
 ```
 
-Khi thay đổi common, install common lại và build các ứng dụng để cập nhật JAR đóng gói. JAR JavaFX được đóng gói cho nền tảng build hiện tại; build lại trên nền tảng khác.
+JAR JavaFX được đóng gói cho nền tảng build hiện tại; build lại trên nền tảng khác.
 
 ## Chạy demo 7 tiến trình
 
@@ -44,11 +43,11 @@ Script mở 1 Worker, 3 Server và 3 Client bằng JavaFX, ghi log vào `logs/`.
 Chạy từng tiến trình riêng:
 
 ```powershell
-java -jar document-worker/target/document-worker-1.0.0-SNAPSHOT.jar --config config/worker.properties
-java -jar server-node/target/server-node-1.0.0-SNAPSHOT.jar --config config/server-1.properties
-java -jar server-node/target/server-node-1.0.0-SNAPSHOT.jar --config config/server-2.properties
-java -jar server-node/target/server-node-1.0.0-SNAPSHOT.jar --config config/server-3.properties
-java -jar client-node/target/client-node-1.0.0-SNAPSHOT.jar --config config/client-1.properties
+java -jar document-worker/target/document-worker-1.0.0-SNAPSHOT.jar --config document-worker/config/worker.properties
+java -jar server-node/target/server-node-1.0.0-SNAPSHOT.jar --config server-node/config/server-1.properties
+java -jar server-node/target/server-node-1.0.0-SNAPSHOT.jar --config server-node/config/server-2.properties
+java -jar server-node/target/server-node-1.0.0-SNAPSHOT.jar --config server-node/config/server-3.properties
+java -jar client-node/target/client-node-1.0.0-SNAPSHOT.jar --config client-node/config/client-1.properties
 ```
 
 Lặp lệnh client với client-2/client-3. Đóng cửa sổ để dừng ứng dụng. Nút Stop Server mô phỏng crash: không chủ động trả lease Coordinator.
@@ -65,10 +64,10 @@ Client headless có thể tự xin quyền để mô phỏng, không có menu th
 
 ## PDF mẫu
 
-Hai file demo được đặt trong `samples/`. Có thể tạo lại bằng:
+Hai file demo được đặt trong `document-worker/samples/`. Có thể tạo lại bằng:
 
 ```powershell
-java -cp document-worker/target/document-worker-1.0.0-SNAPSHOT.jar vn.bully.worker.SamplePdfGenerator samples
+java -cp document-worker/target/document-worker-1.0.0-SNAPSHOT.jar vn.bully.worker.SamplePdfGenerator document-worker/samples
 ```
 
 Merge chọn hai file theo thứ tự hiển thị trong danh sách. Split chọn đúng một file, nhập khoảng trang từ 1. Watermark chọn đúng một file và nhập nội dung. Process cho phép chọn đường dẫn lưu trước khi gửi job; hoàn thành job vẫn giữ phiên đến khi Release hoặc timeout.
@@ -101,7 +100,7 @@ Có thể chạy đầy đủ bằng `./scripts/build.ps1 -Integration -Ui`.
 
 ## Chạy LAN và cấu hình
 
-Sửa `servers` và `worker` trong `config/*.properties` thành IP LAN thực tế, giữ danh sách server nhất quán. `port` là cổng listen cục bộ; mở firewall cho TCP 9001–9003 và 9100. Các tham số dòng lệnh ghi đè file cấu hình.
+Sửa `servers` và `worker` trong thư mục `config/` của từng project thành IP LAN thực tế, giữ danh sách server nhất quán. `port` là cổng listen cục bộ; mở firewall cho TCP 9001–9003 và 9100. Các tham số dòng lệnh ghi đè file cấu hình.
 
 | Tham số | Mặc định |
 |---|---:|
@@ -116,7 +115,7 @@ Không tăng heartbeat/election timeout tùy ý mà giữ lease quá ngắn. Khi
 
 ## Tài liệu
 
-- `docs/PROTOCOL.md`: giao thức, trạng thái, fencing và giới hạn file.
+- `docs/PROTOCOL.md`: giao thức, trạng thái, fencing và giới hạn file. Mỗi project có `src/main/proto/document.proto` riêng; giữ nội dung hợp đồng đồng nhất khi sửa RPC, kiểm tra bằng `scripts/check-protocol.ps1`.
 - `docs/TESTING.md`: tình huống kiểm thử và kịch bản demo.
 
 Phạm vi LAN tin cậy, không có xác thực tài khoản hay TLS. Worker crash mất trạng thái RAM; không phục hồi Worker, không đồng bộ hàng đợi, không database. Kiểm thử tự động thực hiện trên một máy Windows; triển khai nhiều máy LAN cần kiểm tra cấu hình mạng/firewall thực tế.

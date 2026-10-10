@@ -9,7 +9,7 @@ import org.apache.pdfbox.pdmodel.font.*;
 import org.apache.pdfbox.pdmodel.graphics.image.LosslessFactory;
 import java.awt.image.BufferedImage;
 import com.google.protobuf.ByteString;
-import vn.bully.common.rpc.*;
+import vn.bully.worker.rpc.*;
 import java.io.*;
 
 class PdfServiceTest {

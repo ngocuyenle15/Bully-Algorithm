@@ -16,7 +16,7 @@ Client giữ requestId đến khi hủy, trả quyền hoặc phiên hết hạn
 
 ## gRPC
 
-Định nghĩa tại `common/src/main/proto/document.proto`. Worker giới hạn thông điệp 64 MB; PDF tối đa 10 MB/file, 40 MB tổng đầu vào, 60 MB đầu ra. Merge cần ít nhất hai file; Split dùng khoảng trang từ 1 và bao gồm cả hai đầu; Watermark dài 1–200 ký tự. Trên Windows dùng Arial để hỗ trợ Unicode; nền tảng khác dùng Helvetica và chỉ hỗ trợ bộ ký tự của font đó.
+Định nghĩa tại `src/main/proto/document.proto` trong từng project. Worker giới hạn thông điệp 64 MB; PDF tối đa 10 MB/file, 40 MB tổng đầu vào, 60 MB đầu ra. Merge cần ít nhất hai file; Split dùng khoảng trang từ 1 và bao gồm cả hai đầu; Watermark dài 1–200 ký tự. Trên Windows dùng Arial để hỗ trợ Unicode; nền tảng khác dùng Helvetica và chỉ hỗ trợ bộ ký tự của font đó.
 
 Control actions:
 

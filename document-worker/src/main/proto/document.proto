@@ -1,0 +1,47 @@
+syntax = "proto3";
+package bully;
+option java_package = "vn.bully.worker.rpc";
+option java_multiple_files = true;
+service DocumentWorker {
+  rpc Control(ControlRequest) returns (WorkerReply);
+  rpc GetWorkerStatus(StatusRequest) returns (WorkerReply);
+  rpc MergePdf(PdfRequest) returns (PdfReply);
+  rpc SplitPdf(PdfRequest) returns (PdfReply);
+  rpc AddWatermark(PdfRequest) returns (PdfReply);
+}
+message StatusRequest {}
+message ControlRequest {
+  string action = 1;
+  int32 coordinator_id = 2;
+  int64 generation = 3;
+  string request_id = 4;
+  string client_id = 5;
+  string username = 6;
+  string session_id = 7;
+  string access_token = 8;
+}
+message WorkerReply {
+  bool accepted = 1;
+  string error = 2;
+  int32 coordinator_id = 3;
+  int64 generation = 4;
+  int64 lease_remaining_ms = 5;
+  string worker_status = 6;
+  string session_id = 7;
+  string client_id = 8;
+  string request_id = 9;
+  string access_token = 10;
+  int64 session_remaining_ms = 11;
+  string operation = 12;
+  string session_status = 13;
+}
+message PdfRequest {
+  string client_id = 1;
+  string session_id = 2;
+  string access_token = 3;
+  repeated bytes files = 4;
+  int32 start_page = 5;
+  int32 end_page = 6;
+  string watermark = 7;
+}
+message PdfReply { bytes content = 1; string filename = 2; }

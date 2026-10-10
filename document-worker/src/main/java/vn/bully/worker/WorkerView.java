@@ -8,7 +8,7 @@ import javafx.scene.control.*;
 import javafx.scene.layout.VBox;
 import javafx.geometry.Insets;
 import javafx.stage.Stage;
-import vn.bully.common.*;
+import vn.bully.worker.support.*;
 
 public final class WorkerView {
     public static void open(WorkerState state, EventLog log, Runnable stop) {

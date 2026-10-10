@@ -11,10 +11,7 @@ if ($SkipTests) { $testArguments += '-DskipTests' }
 
 Push-Location $projectRoot
 try {
-    # Each project has its own POM; install the shared library before building applications.
-    & mvn -f common/pom.xml install @testArguments
-    if ($LASTEXITCODE -ne 0) { throw 'Build common failed' }
-
+    if ($Project -eq 'All') { & (Join-Path $PSScriptRoot 'check-protocol.ps1') }
     $projects = if ($Project -eq 'All') {
         @('server-node', 'client-node', 'document-worker')
     } else {

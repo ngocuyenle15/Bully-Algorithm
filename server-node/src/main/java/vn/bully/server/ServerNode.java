@@ -1,7 +1,7 @@
 package vn.bully.server;
 
-import vn.bully.common.*;
-import vn.bully.common.rpc.*;
+import vn.bully.server.support.*;
+import vn.bully.server.rpc.*;
 import java.io.*;
 import java.net.*;
 import java.util.*;

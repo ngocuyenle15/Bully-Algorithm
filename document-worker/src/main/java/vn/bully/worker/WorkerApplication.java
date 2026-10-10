@@ -1,7 +1,7 @@
 package vn.bully.worker;
 
 import io.grpc.ServerBuilder;
-import vn.bully.common.*;
+import vn.bully.worker.support.*;
 import java.util.concurrent.*;
 
 public final class WorkerApplication {

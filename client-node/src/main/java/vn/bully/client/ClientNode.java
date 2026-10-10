@@ -1,7 +1,7 @@
 package vn.bully.client;
 
-import vn.bully.common.*;
-import vn.bully.common.rpc.*;
+import vn.bully.client.support.*;
+import vn.bully.client.rpc.*;
 import com.google.protobuf.ByteString;
 import java.io.*;
 import java.nio.file.*;

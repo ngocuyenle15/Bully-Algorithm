@@ -3,8 +3,8 @@ package vn.bully.worker;
 import com.google.protobuf.ByteString;
 import io.grpc.*;
 import io.grpc.stub.StreamObserver;
-import vn.bully.common.rpc.*;
-import vn.bully.common.EventLog;
+import vn.bully.worker.rpc.*;
+import vn.bully.worker.support.EventLog;
 
 public final class DocumentServiceImpl extends DocumentWorkerGrpc.DocumentWorkerImplBase {
     private final WorkerState state;

@@ -3,7 +3,7 @@ package vn.bully.worker;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import static org.junit.jupiter.api.Assertions.*;
-import vn.bully.common.*;
+import vn.bully.worker.support.*;
 import javafx.application.Platform;
 import javafx.stage.*;
 import java.nio.file.*;
@@ -17,8 +17,8 @@ class WorkerViewTest {
     @Test void opensAndRendersApplication() throws Exception {
         var log = new EventLog("UI-Worker");
             var state = new WorkerState(5000, 60000, log);
-            long generation = state.control(vn.bully.common.rpc.ControlRequest.newBuilder().setAction("CLAIM").setCoordinatorId(3).build()).getGeneration();
-            state.control(vn.bully.common.rpc.ControlRequest.newBuilder().setAction("RESERVE").setCoordinatorId(3).setGeneration(generation).setClientId("client-demo").setRequestId("demo-request").build());
+            long generation = state.control(vn.bully.worker.rpc.ControlRequest.newBuilder().setAction("CLAIM").setCoordinatorId(3).build()).getGeneration();
+            state.control(vn.bully.worker.rpc.ControlRequest.newBuilder().setAction("RESERVE").setCoordinatorId(3).setGeneration(generation).setClientId("client-demo").setRequestId("demo-request").build());
             WorkerView.open(state, log, () -> {});
         var done = new CountDownLatch(1); var error = new AtomicReference<Throwable>();
         try {

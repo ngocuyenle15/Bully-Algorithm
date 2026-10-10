@@ -2,15 +2,15 @@
 
 ## Kết quả xác nhận ngày 10/10/2026
 
-Build thành công cả bốn project trên Java 21. Tổng cộng 24 test đã chạy và qua: 2 cấu hình, 10 session/lease, 5 PDF, 4 tích hợp nhiều JVM và 3 JavaFX. Lần kiểm thử tích hợp cuối chạy 37,03 giây, không có failure/error hoặc test bị bỏ qua. Ba JAR ứng dụng đều có Main-Class hợp lệ. Script PowerShell đã được kiểm tra cú pháp.
+Build thành công cả ba project độc lập trên Java 21. Tổng cộng 28 test đã chạy và qua sau refactor: 6 cấu hình, 10 session/lease, 5 PDF, 4 tích hợp nhiều JVM và 3 JavaFX. Lần kiểm thử tích hợp cuối chạy 39,43 giây, không có failure/error hoặc test bị bỏ qua. Ba JAR ứng dụng đều có Main-Class hợp lệ. Script PowerShell đã được kiểm tra cú pháp.
 
-Các nhóm được chạy riêng theo cờ tương ứng; không phải toàn bộ 24 test chạy trong lệnh Maven mặc định. Có thể tái hiện bằng `scripts/build.ps1 -Integration -Ui`.
+Các nhóm được chạy riêng theo cờ tương ứng; không phải toàn bộ 28 test chạy trong lệnh Maven mặc định. Có thể tái hiện bằng `scripts/build.ps1 -Integration -Ui`.
 
 ## Các kiểm thử tự động
 
 | Nhóm | Số test | Nội dung |
 |---|---:|---|
-| ConfigTest | 2 | Cấu hình UTF-8, ghi đè từ dòng lệnh, từ chối cấu hình node không hợp lệ |
+| ConfigTest trong mỗi ứng dụng | 6 | Cấu hình UTF-8, ghi đè từ dòng lệnh, từ chối cấu hình node không hợp lệ |
 | WorkerStateTest | 10 | 20 yêu cầu đồng thời, token, lease, generation cũ, request gửi lại, timeout, job dài, release khi đang xử lý |
 | PdfServiceTest | 5 | Merge, Split, Watermark, dữ liệu lỗi/quá dung lượng, tài nguyên kế thừa; PDF mẫu chứa chữ và hình ảnh |
 | DistributedIntegrationTest | 4 | JVM riêng: FIFO/PDF/failover/restart/khôi phục grant/timeout; ba request đồng thời; ba client thật reconnect và client giữ quyền chết; Coordinator chết với ba request chưa đọc phản hồi |
@@ -45,7 +45,7 @@ Các test này kiểm tra trên localhost Windows. Chưa thay thế kiểm tra f
 
 1. Build rồi chạy `scripts/start-demo.ps1`; đợi Server 3 là Coordinator.
 2. Client 1 Request Access; Client 2 và Client 3 lần lượt Request Access. Kiểm tra Worker giữ Client 1, hàng đợi là Client 2 → Client 3.
-3. Client 1 Merge `samples/sample-1.pdf` và `sample-2.pdf`; lưu và mở kết quả 5 trang. Kiểm tra Worker trở về RESERVED.
+3. Client 1 Merge `document-worker/samples/sample-1.pdf` và `document-worker/samples/sample-2.pdf`; lưu và mở kết quả 5 trang. Kiểm tra Worker trở về RESERVED.
 4. Client 1 Split trang 1–2 hoặc Watermark; vẫn giữ cùng session.
 5. Stop Server 3; đợi Server 2 là Coordinator. Client 1 vẫn xử lý được; Client 2/3 tự kết nối lại và gửi lại yêu cầu. Thứ tự queue sau lỗi có thể thay đổi.
 6. Release Access tại Client 1; một client chờ được cấp quyền, chỉ client đó được bật nút Process.

@@ -3,7 +3,7 @@ package vn.bully.server;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import static org.junit.jupiter.api.Assertions.*;
-import vn.bully.common.*;
+import vn.bully.server.support.*;
 import javafx.application.Platform;
 import javafx.stage.*;
 import java.nio.file.*;
@@ -15,9 +15,9 @@ import javax.imageio.ImageIO;
 @EnabledIfSystemProperty(named = "bully.ui", matches = "true")
 class ServerViewTest {
     @Test void opensAndRendersApplication() throws Exception {
-        var worker = io.grpc.ServerBuilder.forPort(0).addService(new vn.bully.common.rpc.DocumentWorkerGrpc.DocumentWorkerImplBase() {
-                @Override public void control(vn.bully.common.rpc.ControlRequest r, io.grpc.stub.StreamObserver<vn.bully.common.rpc.WorkerReply> out) {
-                    out.onNext(vn.bully.common.rpc.WorkerReply.newBuilder().setAccepted(true).setCoordinatorId(3).setGeneration(1).setLeaseRemainingMs(5000).setWorkerStatus("AVAILABLE").build()); out.onCompleted();
+        var worker = io.grpc.ServerBuilder.forPort(0).addService(new vn.bully.server.rpc.DocumentWorkerGrpc.DocumentWorkerImplBase() {
+                @Override public void control(vn.bully.server.rpc.ControlRequest r, io.grpc.stub.StreamObserver<vn.bully.server.rpc.WorkerReply> out) {
+                    out.onNext(vn.bully.server.rpc.WorkerReply.newBuilder().setAccepted(true).setCoordinatorId(3).setGeneration(1).setLeaseRemainingMs(5000).setWorkerStatus("AVAILABLE").build()); out.onCompleted();
                 }
             }).build().start();
             int port; try (var socket = new java.net.ServerSocket(0)) { port = socket.getLocalPort(); }

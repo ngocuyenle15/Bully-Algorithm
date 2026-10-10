@@ -1,8 +1,8 @@
 # Build fat JAR cho từng project
 
-`server-node`, `client-node`, `document-worker` sử dụng Maven Shade Plugin ở phase `package`. Mỗi JAR ứng dụng chứa common và các dependency runtime, có Main-Class riêng và chạy bằng `java -jar`. Cấu hình IP/port vẫn nằm ngoài JAR.
+`server-node`, `client-node`, `document-worker` sử dụng Maven Shade Plugin ở phase `package`. Mỗi JAR ứng dụng chứa mã nguồn của chính project và các dependency runtime, có Main-Class riêng và chạy bằng `java -jar`. Cấu hình IP/port vẫn nằm ngoài JAR.
 
-`common` là thư viện, build JAR thường bằng `mvn -f common/pom.xml install`; không có main để chạy độc lập. Dependency của common được nhúng khi đóng gói ba ứng dụng.
+Mỗi project tự quản lý thư viện bên thứ ba và tự sinh mã gRPC từ Protobuf nội bộ. Không có dependency giữa các project và không cần Maven install một project khác trước khi build.
 
 ## Build bằng script
 
@@ -10,7 +10,7 @@
 # Build cả ba fat JAR; chạy kiểm thử mặc định.
 ./scripts/build-fat-jars.ps1
 
-# Build riêng một ứng dụng; script tự install common trước.
+# Build riêng một ứng dụng; không cần build các project khác.
 ./scripts/build-fat-jars.ps1 -Project server-node
 ./scripts/build-fat-jars.ps1 -Project client-node
 ./scripts/build-fat-jars.ps1 -Project document-worker
@@ -21,16 +21,15 @@
 
 ## Build bằng Maven
 
-Chạy từ thư mục gốc; install common trước khi build ứng dụng:
+Chạy từ thư mục gốc; thứ tự build tùy ý:
 
 ```powershell
-mvn -f common/pom.xml install
 mvn -f server-node/pom.xml clean package
 mvn -f client-node/pom.xml clean package
 mvn -f document-worker/pom.xml clean package
 ```
 
-Cũng có thể mở terminal trong mỗi project và chạy `mvn clean package`, sau khi common đã được install.
+Có thể copy riêng thư mục project sang máy khác, mở terminal trong đó và chạy `mvn clean package`. Mỗi project có README và thư mục config riêng.
 
 ## File đầu ra
 
@@ -44,7 +43,7 @@ File `original-*.jar` là JAR trước khi Shade nhúng dependency; dùng file t
 
 ## Chạy trên máy khác
 
-Cần Java 21, JAR ứng dụng và file cấu hình tương ứng; không cần Maven hay JAR common riêng.
+Cần Java 21, JAR ứng dụng và file cấu hình tương ứng; không cần Maven trên máy chạy.
 
 ```powershell
 java -jar server-node-1.0.0-SNAPSHOT.jar --config server-1.properties
@@ -52,7 +51,7 @@ java -jar client-node-1.0.0-SNAPSHOT.jar --config client-1.properties
 java -jar document-worker-1.0.0-SNAPSHOT.jar --config worker.properties
 ```
 
-Copy các file cấu hình từ `config/`, sửa IP LAN rồi khởi động ứng dụng. JavaFX có thư viện native theo nền tảng build: JAR build trên Windows dùng cho Windows cùng kiến trúc; build lại trên nền tảng khác. Fat JAR chứa dependency, không chứa JRE.
+Copy các file cấu hình từ `config/` của project tương ứng, sửa IP LAN rồi khởi động ứng dụng. JavaFX có thư viện native theo nền tảng build: JAR build trên Windows dùng cho Windows cùng kiến trúc; build lại trên nền tảng khác. Fat JAR chứa dependency, không chứa JRE.
 
 ## Các thiết lập Shade quan trọng
 
