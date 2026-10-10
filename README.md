@@ -14,6 +14,8 @@ Bốn project Maven độc lập, Java 21: `common`, `server-node`, `client-node
 
 ## Build
 
+Đóng gói fat JAR riêng bằng `./scripts/build-fat-jars.ps1 -Project server-node` (hoặc `client-node`, `document-worker`). Bỏ `-Project` để build cả ba. Chi tiết tại `docs/FAT_JAR.md`.
+
 Cần JDK 21, Maven và mạng để tải dependency lần đầu. Từ thư mục gốc:
 
 ```powershell
