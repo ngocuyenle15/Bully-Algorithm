@@ -14,6 +14,8 @@ Ba project Maven độc lập, Java 21: `server-node`, `client-node`, `document-
 
 ## Build
 
+Trong từng project, chạy `./build-fat-jar.ps1` hoặc `mvn clean package` để tạo fat JAR độc lập. Script nội bộ kiểm tra Main-Class và dependency sau khi build.
+
 Đóng gói fat JAR riêng bằng `./scripts/build-fat-jars.ps1 -Project server-node` (hoặc `client-node`, `document-worker`). Bỏ `-Project` để build cả ba. Chi tiết tại `docs/FAT_JAR.md`.
 
 Cần JDK 21, Maven và mạng để tải dependency lần đầu. Từ thư mục gốc:

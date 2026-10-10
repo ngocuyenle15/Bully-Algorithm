@@ -6,6 +6,17 @@ Mỗi project tự quản lý thư viện bên thứ ba và tự sinh mã gRPC t
 
 ## Build bằng script
 
+Mỗi project có script riêng ngay cạnh `pom.xml`. Mở terminal tại project cần build:
+
+```powershell
+.\build-fat-jar.ps1
+.\build-fat-jar.ps1 -SkipTests
+```
+
+Script này hoạt động với riêng thư mục project, không gọi script hay POM từ project khác. Sau khi build, script kiểm tra Main-Class, các lớp dependency và provider gRPC trong fat JAR.
+
+Các lệnh dưới đây là tiện ích khi đứng tại thư mục gốc chứa cả ba project:
+
 ```powershell
 # Build cả ba fat JAR; chạy kiểm thử mặc định.
 ./scripts/build-fat-jars.ps1

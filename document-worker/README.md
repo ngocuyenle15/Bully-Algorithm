@@ -2,6 +2,18 @@
 
 Java 21, Maven, gRPC, PDFBox và JavaFX. Quản lý lease Coordinator, session/token, timeout và ba tác vụ Merge/Split/Watermark. Không cần thư viện nội bộ từ Server/Client để build.
 
+## Fat JAR ngay trong project
+
+`pom.xml` của project này cấu hình Maven Shade Plugin ở phase `package`, đặt Main-Class, gộp provider gRPC và nhúng dependency runtime. Không cần project hoặc thư viện nội bộ khác.
+
+```powershell
+.\build-fat-jar.ps1
+```
+
+Script build, chạy các test mặc định và kiểm tra manifest/dependency trong JAR. Có thể bỏ qua chạy test bằng `.\build-fat-jar.ps1 -SkipTests`, hoặc dùng trực tiếp `mvn clean package`.
+
+File chạy là `target/<artifactId>-1.0.0-SNAPSHOT.jar`; không dùng file `original-*.jar`. Copy JAR cùng cấu hình trong `config/` sang máy chạy có Java 21; cấu hình IP/port không bị nhúng vào JAR.
+
 ## Build và chạy
 
 Từ thư mục `document-worker`:
