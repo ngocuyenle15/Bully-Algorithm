@@ -1,20 +1,23 @@
 # Kiểm thử và demo
 
-## Kết quả xác nhận ngày 10/10/2026
+## Kết quả xác nhận ngày 08/11/2026
 
-Build thành công cả ba project độc lập trên Java 21. Tổng cộng 28 test đã chạy và qua sau refactor: 6 cấu hình, 10 session/lease, 5 PDF, 4 tích hợp nhiều JVM và 3 JavaFX. Lần kiểm thử tích hợp cuối chạy 39,43 giây, không có failure/error hoặc test bị bỏ qua. Ba JAR ứng dụng đều có Main-Class hợp lệ. Script PowerShell đã được kiểm tra cú pháp.
+Build thành công cả ba project độc lập trên Java 21. Tổng cộng 56 test: 9 cấu hình, 10 Bully/cluster/discovery, 3 client/lưu kết quả, 10 session/lease, 5 PDF, 4 tích hợp nhiều JVM, 3 JavaFX và 12 kiểm tra kích thước cửa sổ. Kết quả là 0 failure, 0 error và 0 skipped khi chạy đủ các cờ. Ba JAR ứng dụng đều có Main-Class hợp lệ và hợp đồng Protobuf đồng nhất.
 
-Các nhóm được chạy riêng theo cờ tương ứng; không phải toàn bộ 28 test chạy trong lệnh Maven mặc định. Có thể tái hiện bằng `scripts/build.ps1 -Integration -Ui`.
+Các nhóm được chạy riêng theo cờ tương ứng; không phải toàn bộ 56 test chạy trong lệnh Maven mặc định. Có thể tái hiện bằng `scripts/build.ps1 -Integration -Ui`.
 
 ## Các kiểm thử tự động
 
 | Nhóm | Số test | Nội dung |
 |---|---:|---|
-| ConfigTest trong mỗi ứng dụng | 6 | Cấu hình UTF-8, ghi đè từ dòng lệnh, từ chối cấu hình node không hợp lệ |
+| ConfigTest trong mỗi ứng dụng | 9 | Cấu hình UTF-8, ghi đè từ dòng lệnh, bind/port và từ chối cấu hình node không hợp lệ |
+| BullyElectionTest, ServerClusterTest, PeerDiscoveryTest | 10 | Vòng bầu cử, Answer/Coordinator, retry khi thiếu công bố, timeout, node ID cao phục hồi, membership động, ID trùng và cluster không liên quan |
+| ClientNodeTest, ResultSaveTest | 3 | Reconnect giữ nguyên request, cancel/release không phụ thuộc Worker endpoint và ghi kết quả an toàn |
 | WorkerStateTest | 10 | 20 yêu cầu đồng thời, token, lease, generation cũ, request gửi lại, timeout, job dài, release khi đang xử lý |
 | PdfServiceTest | 5 | Merge, Split, Watermark, dữ liệu lỗi/quá dung lượng, tài nguyên kế thừa; PDF mẫu chứa chữ và hình ảnh |
-| DistributedIntegrationTest | 4 | JVM riêng: FIFO/PDF/failover/restart/khôi phục grant/timeout; ba request đồng thời; ba client thật reconnect và client giữ quyền chết; Coordinator chết với ba request chưa đọc phản hồi |
+| DistributedIntegrationTest | 4 | JVM riêng, server không nhận danh sách `servers` và tự discovery multicast: FIFO/PDF/failover/restart/khôi phục grant/timeout; ba request đồng thời; ba client thật reconnect và client giữ quyền chết; Coordinator chết với ba request chưa đọc phản hồi |
 | Các ViewTest | 3 | Mở/render JavaFX, nút Stop Server, trạng thái Client vô hiệu hóa xử lý khi chưa có quyền |
+| WindowSizingTest trong mỗi ứng dụng | 12 | DPI, taskbar, nhiều màn hình, tọa độ âm và giới hạn kích thước cửa sổ |
 
 Integration và UI được bật riêng; mặc định Maven bỏ qua hai nhóm này. Test tích hợp dùng timeout ngắn hơn demo để không phải chờ 60 giây; WorkerStateTest kiểm tra ranh giới 60 giây bằng đồng hồ giả lập. Phiên đang xử lý vượt quá 60 giây cũng được kiểm tra bằng đồng hồ giả lập.
 

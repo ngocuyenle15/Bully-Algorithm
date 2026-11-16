@@ -1,147 +1,306 @@
-# Hệ thống xử lý tài liệu phân tán
+# Đồ án loại trừ tương hỗ sử dụng Bully Algorithm
 
-Ba project Maven độc lập, Java 21: `server-node`, `client-node`, `document-worker`. Mỗi project chứa mã nguồn hỗ trợ, Protobuf, cấu hình và POM riêng. Có thể copy một project sang thư mục/máy khác rồi build trực tiếp bằng `mvn clean package`; không phụ thuộc project hoặc artifact nội bộ khác.
+Hệ thống mô phỏng một cụm server bầu Coordinator bằng thuật toán Bully. Client xin quyền sử dụng một tài nguyên găng là `document-worker`; tại một thời điểm chỉ một client có session hợp lệ để xử lý PDF.
 
-## Chức năng đã triển khai
+Project dùng Java 21 và gồm ba ứng dụng Maven độc lập:
 
-- Ba Server Node: TCP JSON theo dòng, Bully Algorithm, heartbeat, phát hiện lỗi và bầu lại Coordinator.
-- Coordinator: hàng đợi FIFO, chống yêu cầu trùng, xin/hủy/trả quyền, cấp session qua Worker.
-- Worker: gRPC, lease và generation chặn Coordinator cũ, session/token, timeout 60 giây mặc định, xử lý một job tại một thời điểm.
-- PDF: Merge, Split theo khoảng trang, Watermark; trả bytes kết quả cho client.
-- Client: tìm Coordinator, tự kết nối lại, gửi lại requestId cũ, giữ phiên trong thời gian failover.
-- JavaFX: cửa sổ Server, Client, Worker; trạng thái và event log. Có chế độ console/headless để kiểm thử.
-- Kiểm thử logic, PDF, nhiều JVM và render giao diện JavaFX.
+| Ứng dụng | Trách nhiệm |
+|---|---|
+| `server-node` | Server discovery, Bully election, heartbeat, Coordinator và hàng đợi yêu cầu |
+| `client-node` | Tìm Coordinator, xin/hủy/trả quyền và gửi tác vụ PDF |
+| `document-worker` | Điểm loại trừ tương hỗ, lease Coordinator, session/token và xử lý PDF |
 
-## Build
+## 1. Project có đúng bản chất thuật toán Bully không?
 
-Trong từng project, chạy `./build-fat-jar.ps1` hoặc `mvn clean package` để tạo fat JAR độc lập. Script nội bộ kiểm tra Main-Class và dependency sau khi build.
+Có. Phần bầu cử tuân theo các quy tắc cốt lõi của Bully:
 
-Đóng gói fat JAR riêng bằng `./scripts/build-fat-jars.ps1 -Project server-node` (hoặc `client-node`, `document-worker`). Bỏ `-Project` để build cả ba. Chi tiết tại `docs/FAT_JAR.md`.
+1. Mỗi server có một ID số nguyên dương, duy nhất và cố định.
+2. Node phát hiện Coordinator chết sẽ gửi `ELECTION` chỉ tới các node có ID lớn hơn.
+3. Node lớn hơn trả `ELECTION_OK` (`Answer` trong đề) và tự phát động bầu cử.
+4. Nếu ứng viên không nhận được `ELECTION_OK`, nó trở thành ứng viên thắng cuộc.
+5. Node thắng gửi `COORDINATOR` để thông báo kết quả.
+6. Nếu đã nhận `ELECTION_OK`, node chờ `COORDINATOR`; hết thời gian chờ mà chưa có kết quả thì bầu lại.
+7. Khi node có ID lớn hơn chạy lại, nó tham gia bầu cử và cuối cùng giành lại vai trò Coordinator.
 
-Cần JDK 21, Maven và mạng để tải dependency lần đầu. Từ thư mục gốc:
+Trong source, ba thông điệp của đề tương ứng:
 
-```powershell
-./scripts/build.ps1
+| Trong đề | Trong project | Ý nghĩa |
+|---|---|---|
+| Election | `ELECTION` | Yêu cầu node ID lớn hơn tham gia bầu cử |
+| Answer | `ELECTION_OK` | Node lớn hơn xác nhận còn sống |
+| Coordinator | `COORDINATOR` | Công bố Coordinator mới |
+
+UDP multicast discovery không thay thế Bully. Discovery chỉ cung cấp membership `ID → IP:port`; việc chọn Coordinator vẫn do các thông điệp và quy tắc Bully thực hiện.
+
+Worker lease/generation cũng là lớp an toàn bổ sung, không phải một phần của Bully. Node thắng chỉ công bố `COORDINATOR` sau khi Worker chấp nhận lease, nhờ đó Coordinator cũ không thể tiếp tục cấp quyền sau failover.
+
+## 2. Bully và loại trừ tương hỗ là hai nhiệm vụ khác nhau
+
+Bully giải quyết câu hỏi: **Server nào được quyền điều phối?**
+
+Worker giải quyết câu hỏi: **Client nào đang sở hữu tài nguyên găng?**
+
+Luồng cấp quyền:
+
+```text
+Client --ACCESS_REQUEST--> Coordinator --RESERVE--> Worker
+Client <--ACCESS_GRANTED-- Coordinator <--session/token-- Worker
+Client -------- PDF + session/token -------------> Worker
+Client --ACCESS_RELEASE--> Coordinator --RELEASE--> Worker
 ```
 
-Hoặc build từng project theo thứ tự bất kỳ:
+Worker tuần tự hóa mọi thay đổi trạng thái và chỉ cho phép tối đa một session hoạt động. Vì vậy hai request đồng thời không thể cùng được cấp quyền, kể cả khi Coordinator thay đổi.
 
-```powershell
-mvn -f server-node/pom.xml package
-mvn -f client-node/pom.xml package
-mvn -f document-worker/pom.xml package
+## 3. Kiến trúc và giao thức
+
+```text
+                  UDP multicast discovery
+            ┌──────────┬──────────┬──────────┐
+            │ Server 1 │ Server 2 │ Server 3 │
+            │   ID 1   │   ID 2   │   ID 3   │
+            └──────────┴──────────┴──────────┘
+                   TCP Bully / heartbeat
+                            │
+Client ───── TCP ─────> Coordinator ───── gRPC ─────> Worker
+Client ─────────────────────── gRPC ─────────────────> Worker
 ```
 
-JAR JavaFX được đóng gói cho nền tảng build hiện tại; build lại trên nền tảng khác.
+| Kết nối | Giao thức | Chức năng |
+|---|---|---|
+| Server ↔ Server | UDP multicast | Tự tìm ID, IP và TCP port của peer |
+| Server ↔ Server | TCP JSON | Bully, heartbeat và đồng bộ Coordinator |
+| Client ↔ Server | TCP JSON | Tìm Coordinator, xin/hủy/trả quyền |
+| Server ↔ Worker | gRPC | Lease, generation, reserve và release session |
+| Client ↔ Worker | gRPC | Kiểm tra session và xử lý PDF |
 
-## Chạy demo 7 tiến trình
+## 4. Các server tìm nhau như thế nào?
 
-```powershell
-./scripts/start-demo.ps1
+Mỗi server phát định kỳ `SERVER_HELLO` tới multicast group:
+
+```json
+{"version":1,"clusterId":"bully-demo","type":"SERVER_HELLO","nodeId":3,"tcpPort":9003,"bootId":"uuid"}
 ```
 
-Script mở 1 Worker, 3 Server và 3 Client bằng JavaFX, ghi log vào `logs/`. Đợi Server 3 trở thành Coordinator, rồi nhấn Request Access tại các client. Mỗi client cần ID riêng.
+Server nhận lấy IP trực tiếp từ địa chỉ nguồn UDP, không tin IP trong payload. Membership động lưu ID, địa chỉ, `bootId` và thời điểm `lastSeen`.
 
-Chạy từng tiến trình riêng:
+- `cluster-id` ngăn hai cụm trên cùng LAN discovery nhầm nhau.
+- `bootId` phân biệt hai lần chạy của cùng một ID.
+- `discovery-warmup-ms` cho phép học membership trước lần bầu cử đầu.
+- `discovery-timeout-ms` loại peer không còn phát thông báo.
+- Hai process cùng ID chuyển sang `ID_CONFLICT` và không tham gia bầu cử.
+- `servers` phía server là seed/fallback tùy chọn khi multicast bị chặn.
 
-```powershell
-java -jar document-worker/target/document-worker-1.0.0-SNAPSHOT.jar --config document-worker/config/worker.properties
-java -jar server-node/target/server-node-1.0.0-SNAPSHOT.jar --config server-node/config/server-1.properties
-java -jar server-node/target/server-node-1.0.0-SNAPSHOT.jar --config server-node/config/server-2.properties
-java -jar server-node/target/server-node-1.0.0-SNAPSHOT.jar --config server-node/config/server-3.properties
-java -jar client-node/target/client-node-1.0.0-SNAPSHOT.jar --config client-node/config/client-1.properties
+ID không được tự sinh và không thay đổi lúc runtime. Mỗi server phải có ID cố định, dương và không trùng.
+
+## 5. Điều gì xảy ra khi Coordinator chết?
+
+Ví dụ Coordinator 3 chết:
+
+```text
+Server 1              Server 2              Server 3
+   | heartbeat timeout   |                     X
+   | ELECTION ---------->|                     X
+   |<----- ELECTION_OK   |                     X
+   |                     | ELECTION ---------->X
+   |                     | không có Answer     X
+   |                     | CLAIM lease Worker
+   |<------ COORDINATOR--|                     X
 ```
 
-Lặp lệnh client với client-2/client-3. Đóng cửa sổ để dừng ứng dụng. Nút Stop Server mô phỏng crash: không chủ động trả lease Coordinator.
+Trình tự thực tế:
 
-Console/headless:
+1. Follower gửi heartbeat tới Coordinator hiện tại.
+2. Đủ `heartbeat-failures` lần lỗi thì xóa Coordinator cũ.
+3. Các node chạy Bully trên snapshot membership còn hoạt động.
+4. ID lớn nhất còn sống thắng.
+5. Ứng viên mới chờ lease cũ hết hạn hoặc được nhường.
+6. Worker tăng `generation` và cấp lease mới.
+7. Node mới phát `COORDINATOR`.
 
-```powershell
-java -jar document-worker/target/document-worker-1.0.0-SNAPSHOT.jar --headless
-java -jar server-node/target/server-node-1.0.0-SNAPSHOT.jar --headless --id 3
-java -jar client-node/target/client-node-1.0.0-SNAPSHOT.jar --headless --id client-4 --request true
+Nếu Server 3 chạy lại, discovery tìm thấy ID 3. Vì 3 lớn hơn Coordinator 2, một cuộc bầu cử mới xảy ra và Server 3 cuối cùng trở lại làm Coordinator.
+
+## 6. Client tìm Coordinator như thế nào?
+
+Client không tham gia Bully và hiện không dùng multicast. Client vẫn giữ danh sách địa chỉ server trong cấu hình:
+
+```properties
+servers=1@192.168.1.11:9001,2@192.168.1.12:9002,3@192.168.1.13:9003
+worker=192.168.1.10:9100
 ```
 
-Client headless có thể tự xin quyền để mô phỏng, không có menu thao tác PDF; dùng JavaFX để chọn file và lưu kết quả. Dừng console bằng Ctrl+C.
+Client gửi `GET_COORDINATOR` lần lượt tới các server. Một server biết kết quả sẽ trả `COORDINATOR_INFO`; nếu cluster đang bầu cử, client nhận `ELECTION_IN_PROGRESS` và tiếp tục chờ.
 
-## PDF mẫu
+Worker không tự discovery. Địa chỉ Worker vẫn được cấu hình thủ công tại cả Client và Server. `document-worker` chỉ mở cổng gRPC và chờ kết nối.
 
-Hai file demo được đặt trong `document-worker/samples/`. Có thể tạo lại bằng:
+## 7. Coordinator chết đúng lúc Client xin quyền
 
-```powershell
-java -cp document-worker/target/document-worker-1.0.0-SNAPSHOT.jar vn.bully.worker.SamplePdfGenerator document-worker/samples
+Client tạo một `requestId` và giữ nguyên ID này cho đến khi request kết thúc. Khi TCP lỗi, client xóa cache Coordinator nhưng không xóa `requestId`, sau đó tìm Coordinator mới và gửi lại cùng request.
+
+Có ba trường hợp:
+
+1. Coordinator chết trước khi nhận request: Coordinator mới xử lý request như mới.
+2. Request đã ở queue nhưng chưa reserve: queue RAM cũ mất; client gửi lại và được đưa vào queue mới.
+3. Worker đã reserve nhưng phản hồi bị mất: Coordinator mới gọi `RESERVE` với cùng `clientId/requestId`; Worker trả lại đúng session/token cũ, không tạo session thứ hai.
+
+Nếu Client đã nhận `ACCESS_GRANTED`, session nằm ở Worker nên vẫn tồn tại khi Coordinator chết. Client tiếp tục xử lý PDF và gửi `ACCESS_RELEASE` tới Coordinator mới sau failover.
+
+## 8. Trạng thái Worker và cơ chế fencing
+
+| Lệnh | Ý nghĩa |
+|---|---|
+| `CLAIM` | Xin lease khi lease cũ hết hạn; tăng generation |
+| `RENEW` | Gia hạn lease hiện tại |
+| `DROP` | Nhường lease khi phát hiện node ID cao hơn |
+| `STATUS` | Xác minh Coordinator/generation hiện tại |
+| `RESERVE` | Tạo hoặc khôi phục session theo `clientId/requestId` |
+| `RELEASE` | Trả session đúng client/session/token |
+
+Ngoài `CLAIM`, mọi lệnh phải có đúng `coordinatorId`, `generation` và lease chưa hết hạn. Coordinator cũ hoặc node bị phân vùng không thể dùng generation cũ để cấp quyền.
+
+## 9. Cấu trúc thư mục
+
+```text
+Bully/
+├── client-node/       # Client JavaFX/headless
+├── document-worker/   # Worker gRPC và PDF
+├── server-node/       # Discovery, Bully và Coordinator
+├── docs/              # Đặc tả giao thức và kiểm thử
+├── logs/              # Log chạy ứng dụng
+├── run/               # CMD chạy bằng Java đóng gói
+├── runtime/           # JDK 21.0.10
+├── scripts/           # Build, test và khởi động demo
+└── README.md
 ```
 
-Merge chọn hai file theo thứ tự hiển thị trong danh sách. Split chọn đúng một file, nhập khoảng trang từ 1. Watermark chọn đúng một file và nhập nội dung. Process cho phép chọn đường dẫn lưu trước khi gửi job; hoàn thành job vẫn giữ phiên đến khi Release hoặc timeout.
+Ba project Maven độc lập và không tham chiếu artifact nội bộ của nhau. Mỗi project có bản sao `document.proto`; `scripts/check-protocol.ps1` kiểm tra hợp đồng wire giống nhau.
 
-## Kiểm thử
+## 10. Build
 
-Logic session/lease và PDF chạy trong build thông thường. Tích hợp dùng các JVM riêng và tự dừng các tiến trình do test tạo; không dùng port mặc định của demo:
-
-```powershell
-./scripts/build.ps1 -Integration
-```
-
-Hoặc sau khi đã build ba JAR:
+Build toàn bộ:
 
 ```powershell
-mvn -f document-worker/pom.xml '-Dbully.integration=true' '-Dtest=DistributedIntegrationTest' test
+powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1
 ```
 
-Kiểm thử mở/render JavaFX (cần môi trường desktop, có cửa sổ xuất hiện ngắn):
+Hoặc build riêng:
 
 ```powershell
-mvn -f server-node/pom.xml '-Dbully.ui=true' '-Dtest=*ViewTest' test
-mvn -f client-node/pom.xml '-Dbully.ui=true' '-Dtest=*ViewTest' test
-mvn -f document-worker/pom.xml '-Dbully.ui=true' '-Dtest=*ViewTest' test
+mvn -f server-node/pom.xml clean package
+mvn -f client-node/pom.xml clean package
+mvn -f document-worker/pom.xml clean package
 ```
 
-Báo cáo tại `target/surefire-reports/` của từng project. Ảnh kiểm tra giao diện tại `target/ui-preview.png`. Log kiểm thử tích hợp tại `document-worker/target/integration-*/`.
+Fat JAR được tạo trong thư mục `target/` của từng project với tên `<project>-1.0.0-SNAPSHOT.jar`.
 
-Có thể chạy đầy đủ bằng `./scripts/build.ps1 -Integration -Ui`.
+## 11. Chạy demo trên một máy
 
-## Chạy LAN và cấu hình
+Build trước, sau đó mở các lệnh trong các cửa sổ riêng theo thứ tự:
 
-Sửa `servers` và `worker` trong thư mục `config/` của từng project thành IP LAN thực tế, giữ danh sách server nhất quán. `port` là cổng listen cục bộ; mở firewall cho TCP 9001–9003 và 9100. Các tham số dòng lệnh ghi đè file cấu hình.
+```cmd
+run\run-worker.cmd
+run\run-server.cmd 1
+run\run-server.cmd 2
+run\run-server.cmd 3
+run\run-client.cmd 1
+run\run-client.cmd 2
+run\run-client.cmd 3
+```
 
-| Tham số | Mặc định |
-|---|---:|
-| heartbeat-ms | 1000 |
-| heartbeat-timeout-ms | 1000 |
-| heartbeat-failures | 3 |
-| election-ms | 2000 |
-| lease-ms tại Worker | 5000 |
-| session-ms tại Worker | 60000 |
+Các CMD sử dụng `runtime/jdk-21.0.10` và tự xác định thư mục project, nên có thể double-click. Nếu không truyền số, server/client mặc định dùng cấu hình số 1.
 
-Không tăng heartbeat/election timeout tùy ý mà giữ lease quá ngắn. Khi failover, Coordinator mới có thể phải chờ lease cũ hết hạn trước khi được Worker chấp nhận. Queue position được cập nhật khi client poll; khi Coordinator chết hàng đợi được tạo lại và không bảo toàn thứ tự cũ.
-
-## Tài liệu
-
-- `docs/PROTOCOL.md`: giao thức, trạng thái, fencing và giới hạn file. Mỗi project có `src/main/proto/document.proto` riêng; giữ nội dung hợp đồng đồng nhất khi sửa RPC, kiểm tra bằng `scripts/check-protocol.ps1`.
-- `docs/TESTING.md`: tình huống kiểm thử và kịch bản demo.
-
-Phạm vi LAN tin cậy, không có xác thực tài khoản hay TLS. Worker crash mất trạng thái RAM; không phục hồi Worker, không đồng bộ hàng đợi, không database. Kiểm thử tự động thực hiện trên một máy Windows; triển khai nhiều máy LAN cần kiểm tra cấu hình mạng/firewall thực tế.
-
-## Cấu hình interface mạng và cổng
-
-Sửa file trong thư mục config của từng project hoặc truyền tham số khi chạy JAR. Tham số dòng lệnh ghi đè file cấu hình.
-
-| Project | Interface/IP cục bộ | Cổng |
-| --- | --- | --- |
-| server-node | bind-address | port: TCP lắng nghe, mặc định theo node 9001/9002/9003 |
-| document-worker | bind-address | port: gRPC lắng nghe, mặc định 9100 |
-| client-node | bind-address: IP nguồn cho TCP và gRPC | local-port: TCP nguồn; grpc-local-port: gRPC nguồn; mặc định cả hai là 0 |
-
-bind-address là địa chỉ IP được gán cho card mạng trên máy chạy process, ví dụ 192.168.1.11. Có thể xem bằng ipconfig. Giá trị 0.0.0.0 cho phép Server/Worker lắng nghe trên mọi interface; với kết nối đi, hệ điều hành chọn interface phù hợp. Địa chỉ không thuộc máy cục bộ bị từ chối khi khởi động.
-
-Client truy vấn Server/Worker nên không có socket lắng nghe. Cổng nguồn 0 để hệ điều hành cấp tự động là cấu hình khuyến nghị; cổng TCP nguồn cố định có thể gặp xung đột hoặc TIME_WAIT khi kết nối lại liên tục.
-
-Ví dụ ghi đè khi chạy JAR:
+Có thể mở toàn bộ demo bằng:
 
 ```powershell
-java -jar server-node/target/server-node-1.0.0-SNAPSHOT.jar --config server-node/config/server-1.properties --bind-address 192.168.1.11 --port 9001
-java -jar document-worker/target/document-worker-1.0.0-SNAPSHOT.jar --config document-worker/config/worker.properties --bind-address 192.168.1.10 --port 9100
-java -jar client-node/target/client-node-1.0.0-SNAPSHOT.jar --config client-node/config/client-1.properties --bind-address 192.168.1.20 --local-port 0 --grpc-local-port 0
+powershell -ExecutionPolicy Bypass -File .\scripts\start-demo.ps1
 ```
 
-Khi chạy LAN, cập nhật servers và worker thành IP/cổng đích thực tế mà các máy khác truy cập được. Không dùng 0.0.0.0 làm địa chỉ đích. Cổng của mỗi node trong servers phải khớp port lắng nghe của node đó.
+Nút `Stop Server` mô phỏng crash: server không chủ động trả lease, buộc cluster phát hiện lỗi và chờ lease hết hạn.
+
+## 12. Chạy trên nhiều máy LAN
+
+Ví dụ Server 1:
+
+```properties
+bind-address=192.168.1.11
+id=1
+port=9001
+cluster-id=bully-demo
+discovery-enabled=true
+discovery-group=239.255.42.99
+discovery-port=8999
+discovery-interval-ms=1000
+discovery-timeout-ms=5000
+discovery-warmup-ms=2500
+worker=192.168.1.10:9100
+```
+
+Server 2 và 3 chỉ thay `bind-address`, `id` và `port`. Tất cả server phải có cùng `cluster-id`, multicast group, discovery port và Worker address.
+
+| Cổng | Giao thức | Thành phần |
+|---|---|---|
+| 8999 | UDP multicast | Server discovery |
+| 9001–9003 | TCP | Server/Bully/Client request |
+| 9100 | TCP gRPC | Document Worker |
+
+Client vẫn phải cấu hình danh sách IP server và Worker thực tế. Không dùng `0.0.0.0` làm địa chỉ đích. Với máy nhiều card mạng, nên đặt `bind-address` thành IP card LAN cụ thể để multicast đi đúng interface.
+
+## 13. Xử lý PDF
+
+- Merge: cần ít nhất hai file.
+- Split: một file và khoảng trang tính từ 1, bao gồm hai đầu.
+- Watermark: một file và nội dung 1–200 ký tự.
+- Giới hạn: 10 MB/file, 40 MB tổng input, 60 MB output.
+- Hoàn thành job không tự release session; client giữ quyền đến khi Release hoặc timeout.
+
+PDF chỉ là tài nguyên minh họa. Trọng tâm đồ án là Bully election, failover và loại trừ tương hỗ.
+
+## 14. Kiểm thử toàn bộ
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 -Integration -Ui
+```
+
+| Nhóm | Số test | Nội dung |
+|---|---:|---|
+| Config | 9 | UTF-8, CLI override, bind/port, multicast và ID |
+| Bully/cluster/discovery | 10 | Vòng bầu cử, Answer/Coordinator, timeout, node phục hồi, ID trùng và membership động |
+| Client và lưu kết quả | 3 | Retry giữ nguyên request, cancel/release và ghi file an toàn |
+| WorkerState | 10 | Lease, generation, token, timeout và request đồng thời |
+| PDF | 5 | Merge, Split, Watermark và giới hạn dữ liệu |
+| Integration đa JVM | 4 | Discovery không seed, FIFO, failover, restart, retry và client recovery |
+| JavaFX | 3 | Mở/render Server, Client và Worker |
+| Window sizing | 12 | DPI, taskbar, nhiều màn hình và giới hạn cửa sổ |
+
+Tổng cộng 56 test riêng biệt, 0 failure, 0 error và 0 skipped trong lần xác nhận ngày 08/11/2026. Báo cáo nằm trong `target/surefire-reports/`; log integration nằm trong `document-worker/target/integration-*`.
+
+## 15. Kịch bản bảo vệ đề tài
+
+1. Khởi động Worker và ba Server; quan sát Server 3 được bầu.
+2. Cho ba Client xin quyền; xác nhận một client được cấp, hai client chờ FIFO.
+3. Dừng Server 3; quan sát heartbeat timeout, `ELECTION`, `ELECTION_OK`, Server 2 claim lease và phát `COORDINATOR`.
+4. Xác nhận client đang giữ quyền vẫn dùng session cũ.
+5. Release client hiện tại; client kế tiếp được cấp.
+6. Khởi động lại Server 3; discovery tìm thấy ID cao hơn và Server 3 giành lại Coordinator.
+7. Dừng client đang giữ quyền; sau session timeout, client kế tiếp được cấp.
+
+Các log quan trọng: `Discovery started`, `Discovered server`, `ELECTION`, `ELECTION_OK (Answer)`, `COORDINATOR`, heartbeat timeout, generation và session grant/release.
+
+## 16. Giới hạn phạm vi
+
+- Membership UDP là eventual consistency; multicast có thể bị firewall, router hoặc Wi-Fi client isolation chặn.
+- Client chưa tự discovery và vẫn cần danh sách server tĩnh.
+- Worker là single point of failure và giữ trạng thái trong RAM.
+- Queue Coordinator không replicate; sau failover, client gửi lại request nhưng thứ tự FIFO cũ có thể thay đổi.
+- Không có quorum/consensus như Raft hoặc Paxos. Worker lease chỉ fencing quyền cấp session.
+- Không có TLS hoặc xác thực; giả định LAN tin cậy.
+- Heartbeat không phân biệt process chết với lỗi mạng.
+- Worker restart làm mất session hiện có; phục hồi Worker nằm ngoài phạm vi đồ án.
+
+Các giới hạn này không làm sai thuật toán Bully. Trong phạm vi đồ án, hệ thống bảo đảm eventual election của node ID lớn nhất còn hoạt động và tối đa một client sở hữu tài nguyên găng tại một thời điểm.
+
+## 17. Tài liệu bổ sung
+
+- `docs/PROTOCOL.md`: wire protocol, session và fencing.
+- `docs/TESTING.md`: test case và bằng chứng kiểm thử.
+- `docs/ARCHITECTURE_REVIEW.md`: phân tích kiến trúc và kịch bản failover.
+- README riêng trong từng project: hướng dẫn build độc lập.

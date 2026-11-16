@@ -31,6 +31,12 @@ public final class Config {
         return value;
     }
     public boolean headless() { return Boolean.parseBoolean(get("headless", "false")); }
+    public boolean flag(String key, boolean fallback) {
+        String value = get(key, Boolean.toString(fallback)).trim();
+        if (!value.equalsIgnoreCase("true") && !value.equalsIgnoreCase("false"))
+            throw new IllegalArgumentException(key + " must be true or false");
+        return Boolean.parseBoolean(value);
+    }
     public InetAddress bindAddress() {
         try {
             String value = get("bind-address", "0.0.0.0").trim();
@@ -48,11 +54,27 @@ public final class Config {
         return value;
     }
     public List<NodeAddress> nodes() {
-        var nodes = Arrays.stream(get("servers", "1@127.0.0.1:9001,2@127.0.0.1:9002,3@127.0.0.1:9003").split(","))
+        String configured = get("servers", "").trim();
+        if (configured.isEmpty()) return List.of();
+        var nodes = Arrays.stream(configured.split(","))
             .map(NodeAddress::parse).toList();
+        if (nodes.stream().anyMatch(node -> node.id() <= 0))
+            throw new IllegalArgumentException("Server ID must be positive");
         if (nodes.stream().map(NodeAddress::id).distinct().count() != nodes.size())
             throw new IllegalArgumentException("Duplicate server ID");
         return nodes;
+    }
+    public String clusterId() {
+        String value = get("cluster-id", "bully-demo").trim();
+        if (value.isEmpty() || value.length() > 100) throw new IllegalArgumentException("Invalid cluster-id");
+        return value;
+    }
+    public InetAddress discoveryGroup() {
+        try {
+            var group = InetAddress.getByName(get("discovery-group", "239.255.42.99").trim());
+            if (!group.isMulticastAddress()) throw new IllegalArgumentException("discovery-group must be multicast");
+            return group;
+        } catch (IOException e) { throw new IllegalArgumentException("Invalid discovery-group", e); }
     }
     public NodeAddress worker() { return NodeAddress.parse("0@" + get("worker", "127.0.0.1:9100")); }
 }

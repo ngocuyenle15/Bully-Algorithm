@@ -50,6 +50,8 @@ public final class Config {
     public List<NodeAddress> nodes() {
         var nodes = Arrays.stream(get("servers", "1@127.0.0.1:9001,2@127.0.0.1:9002,3@127.0.0.1:9003").split(","))
             .map(NodeAddress::parse).toList();
+        if (nodes.stream().anyMatch(node -> node.id() <= 0))
+            throw new IllegalArgumentException("Server ID must be positive");
         if (nodes.stream().map(NodeAddress::id).distinct().count() != nodes.size())
             throw new IllegalArgumentException("Duplicate server ID");
         return nodes;

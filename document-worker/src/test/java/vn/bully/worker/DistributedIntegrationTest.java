@@ -9,7 +9,7 @@ import com.google.protobuf.ByteString;
 import vn.bully.worker.support.*;
 import vn.bully.worker.testsupport.*;
 import vn.bully.worker.rpc.*;
-import java.net.ServerSocket;
+import java.net.*;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
@@ -20,13 +20,16 @@ import java.util.function.BooleanSupplier;
 class DistributedIntegrationTest {
     private final List<Process> processes = new ArrayList<>();
     private final Map<Integer, Process> serverProcesses = new HashMap<>();
+    private final Map<Integer, Path> serverLogs = new HashMap<>();
     private final List<NodeAddress> nodes = new ArrayList<>();
     private WorkerClient worker;
-    private int workerPort;
+    private int workerPort, discoveryPort;
     private String servers;
+    private String clusterId;
     private Path logs;
 
     private static int freePort() throws Exception { try (var socket = new ServerSocket(0)) { return socket.getLocalPort(); } }
+    private static int freeUdpPort() throws Exception { try (var socket = new DatagramSocket(0)) { return socket.getLocalPort(); } }
     private Process launch(String project, String name, String... args) throws Exception {
         Path root = Path.of("..").toAbsolutePath().normalize();
         Path jar = root.resolve(project + "/target/" + project + "-1.0.0-SNAPSHOT.jar");
@@ -40,6 +43,7 @@ class DistributedIntegrationTest {
     @BeforeEach void startCluster() throws Exception {
         logs = Files.createTempDirectory(Path.of("target"), "integration-");
         workerPort = freePort();
+        discoveryPort = freeUdpPort(); clusterId = "integration-" + UUID.randomUUID();
         for (int id = 1; id <= 3; id++) nodes.add(new NodeAddress(id, "127.0.0.1", freePort()));
         servers = String.join(",", nodes.stream().map(NodeAddress::toString).toList());
         launch("document-worker", "worker", "--port", "" + workerPort, "--lease-ms", "1500", "--session-ms", "10000");
@@ -47,10 +51,22 @@ class DistributedIntegrationTest {
         await(() -> worker.status().getWorkerStatus().equals("AVAILABLE"), 15000);
         startServer(2); startServer(1); startServer(3);
         awaitCoordinator(3);
+        for (int id = 1; id <= 3; id++) {
+            int currentId = id;
+            await(() -> {
+                try { return Files.readAllLines(serverLogs.get(currentId)).stream()
+                    .filter(line -> line.contains("Discovered server ")).count() >= 2; }
+                catch (Exception e) { return false; }
+            }, 5000);
+        }
     }
     private void startServer(int id) throws Exception {
-        serverProcesses.put(id, launch("server-node", "server-" + id + "-" + processes.size(),
-            "--id", "" + id, "--servers", servers, "--worker", "127.0.0.1:" + workerPort,
+        String name = "server-" + id + "-" + processes.size();
+        serverLogs.put(id, logs.resolve(name + ".log"));
+        serverProcesses.put(id, launch("server-node", name,
+            "--id", "" + id, "--port", "" + nodes.get(id - 1).port(), "--worker", "127.0.0.1:" + workerPort,
+            "--cluster-id", clusterId, "--discovery-group", "239.255.42.99", "--discovery-port", "" + discoveryPort,
+            "--discovery-interval-ms", "100", "--discovery-timeout-ms", "700", "--discovery-warmup-ms", "400",
             "--heartbeat-ms", "200", "--heartbeat-timeout-ms", "200", "--heartbeat-failures", "3", "--election-ms", "300"));
     }
     private void killServer(int id) throws Exception { var process = serverProcesses.get(id); process.destroyForcibly(); assertTrue(process.waitFor(5, TimeUnit.SECONDS)); }

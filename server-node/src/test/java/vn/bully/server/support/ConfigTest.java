@@ -16,10 +16,17 @@ class ConfigTest {
         assertEquals("192.168.1.10", config.worker().host()); assertTrue(config.headless());
     }
     @Test void invalidNodeConfigurationIsRejected() throws Exception {
+        assertTrue(new Config(new String[]{}).nodes().isEmpty());
         var config = new Config(new String[]{"--servers", "1@127.0.0.1:9001,1@127.0.0.1:9002"});
         assertThrows(IllegalArgumentException.class, config::nodes);
+        assertThrows(IllegalArgumentException.class,
+            () -> new Config(new String[]{"--servers", "0@127.0.0.1:9001"}).nodes());
         assertThrows(IllegalArgumentException.class, () -> NodeAddress.parse("1@127.0.0.1:70000"));
         assertThrows(IllegalArgumentException.class, () -> new Config(new String[]{"--id"}));
+        assertThrows(IllegalArgumentException.class,
+            () -> new Config(new String[]{"--discovery-group", "127.0.0.1"}).discoveryGroup());
+        assertThrows(IllegalArgumentException.class,
+            () -> new Config(new String[]{"--discovery-enabled", "yes"}).flag("discovery-enabled", true));
     }
     @Test void networkBindingAndPortRangesAreValidated() throws Exception {
         var loopback = new Config(new String[]{"--bind-address", "127.0.0.1", "--port", "9100", "--local-port", "0"});

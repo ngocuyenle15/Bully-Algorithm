@@ -9,10 +9,15 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class ServerNode implements AutoCloseable {
+    private record Member(NodeAddress address, String bootId, long lastSeenNanos, boolean seed) { }
+
     private final int id, heartbeatTimeout, failureLimit, electionTimeout;
-    private final List<NodeAddress> nodes;
+    private final ConcurrentMap<Integer, Member> members = new ConcurrentHashMap<>();
     private final WorkerClient worker;
     private final InetAddress bindAddress;
+    private final ServerDiscovery discovery;
+    private final long discoveryTimeoutNanos, electionReadyNanos;
+    private final ConcurrentMap<Integer, Long> peerConflicts = new ConcurrentHashMap<>();
     public final EventLog log;
     private final ServerSocket listener;
     private final ExecutorService connections = Executors.newVirtualThreadPerTaskExecutor();
@@ -23,29 +28,107 @@ public final class ServerNode implements AutoCloseable {
     private volatile boolean running = true, coordinator;
     private volatile int coordinatorId;
     private volatile long generation;
+    private volatile long selfConflictUntilNanos;
     private int failures, ticks;
     private volatile String display = "Starting";
     private long announcedGeneration = -1;
 
     public ServerNode(Config config) throws IOException {
-        id = config.number("id", 1); nodes = config.nodes();
-        var self = nodes.stream().filter(n -> n.id() == id).findFirst()
-            .orElseThrow(() -> new IllegalArgumentException("Server ID is missing from servers list"));
+        id = config.number("id", 1);
+        var seeds = config.nodes();
+        var configuredSelf = seeds.stream().filter(n -> n.id() == id).findFirst();
         heartbeatTimeout = config.number("heartbeat-timeout-ms", 1000);
         failureLimit = config.number("heartbeat-failures", 3);
         electionTimeout = config.number("election-ms", 2000);
         bindAddress = config.bindAddress();
-        int port = config.port("port", self.port(), false);
+        int defaultPort = configuredSelf.map(NodeAddress::port).orElseGet(() -> {
+            if (id > 56535) throw new IllegalArgumentException("port is required for server ID greater than 56535");
+            return 9000 + id;
+        });
+        int port = config.port("port", defaultPort, false);
+        if (configuredSelf.isPresent() && port != configuredSelf.get().port())
+            throw new IllegalArgumentException("port must match this server in the servers list: " + configuredSelf.get());
         listener = new ServerSocket();
         listener.bind(new InetSocketAddress(bindAddress, port));
-        worker = new WorkerClient(config.worker(), bindAddress, 0); log = new EventLog("Server-" + id);
+        log = new EventLog("Server-" + id);
+        for (var seed : seeds) members.put(seed.id(), new Member(seed, "seed", 0, true));
+        String advertisedHost = configuredSelf.map(NodeAddress::host).orElseGet(() -> {
+            String configured = config.get("advertise-address", "").trim();
+            if (!configured.isEmpty()) return configured;
+            if (!bindAddress.isAnyLocalAddress()) return bindAddress.getHostAddress();
+            return InetAddress.getLoopbackAddress().getHostAddress();
+        });
+        members.put(id, new Member(new NodeAddress(id, advertisedHost, port), "self", 0, true));
+        worker = new WorkerClient(config.worker(), bindAddress, 0);
+        boolean discoveryEnabled = config.flag("discovery-enabled", true);
+        int discoveryTimeout = config.number("discovery-timeout-ms", 5000);
+        int discoveryInterval = config.number("discovery-interval-ms", 1000);
+        if (discoveryTimeout <= discoveryInterval)
+            throw new IllegalArgumentException("discovery-timeout-ms must be greater than discovery-interval-ms");
+        discoveryTimeoutNanos = TimeUnit.MILLISECONDS.toNanos(discoveryTimeout);
+        int warmup = discoveryEnabled ? config.number("discovery-warmup-ms", 2500) : 0;
+        electionReadyNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(warmup);
+        discovery = discoveryEnabled
+            ? new ServerDiscovery(config.clusterId(), id, port, config.discoveryGroup(),
+                config.port("discovery-port", 8999, false), discoveryInterval, bindAddress,
+                this::onDiscovered, log)
+            : null;
         connections.submit(this::accept);
         scheduler.scheduleWithFixedDelay(this::tick, 0, config.number("heartbeat-ms", 1000), TimeUnit.MILLISECONDS);
-        log.info("Server started id=" + id + " listening=" + listener.getLocalSocketAddress());
+        log.info("Server started id=" + id + " listening=" + listener.getLocalSocketAddress()
+            + (discoveryEnabled ? " discovery-warmup-ms=" + warmup : " discovery=disabled"));
     }
     public int id() { return id; }
     public InetSocketAddress listenAddress() { return (InetSocketAddress) listener.getLocalSocketAddress(); }
     public String display() { return display; }
+    private void onDiscovered(ServerDiscovery.Hello hello) {
+        long now = System.nanoTime();
+        if (hello.nodeId() == id) {
+            selfConflictUntilNanos = now + discoveryTimeoutNanos;
+            log.info("DUPLICATE SERVER ID detected id=" + id + " remote="
+                + hello.sourceAddress().getHostAddress() + ":" + hello.tcpPort());
+            return;
+        }
+        var address = new NodeAddress(hello.nodeId(), hello.sourceAddress().getHostAddress(), hello.tcpPort());
+        members.compute(hello.nodeId(), (key, old) -> {
+            if (old != null && !old.bootId().equals(hello.bootId()) && !old.bootId().equals("seed")
+                && now - old.lastSeenNanos() <= discoveryTimeoutNanos) {
+                peerConflicts.put(key, now + discoveryTimeoutNanos);
+                log.info("Duplicate discovered server ID=" + key + "; excluding it from election");
+            }
+            boolean changed = old == null || !old.address().equals(address) || !old.bootId().equals(hello.bootId());
+            if (changed) log.info("Discovered server " + address);
+            return new Member(address, hello.bootId(), now, old != null && old.seed());
+        });
+        alive.put(hello.nodeId(), true);
+    }
+    private void expireDiscovery() {
+        long now = System.nanoTime();
+        for (var entry : members.entrySet()) {
+            var member = entry.getValue();
+            if (entry.getKey() != id && !member.seed() && now - member.lastSeenNanos() > discoveryTimeoutNanos) {
+                if (members.remove(entry.getKey(), member)) {
+                    alive.put(entry.getKey(), false);
+                    log.info("Discovery timeout server=" + entry.getKey());
+                }
+            }
+        }
+        peerConflicts.entrySet().removeIf(entry -> entry.getValue() <= now);
+    }
+    private List<NodeAddress> activeNodes() {
+        long now = System.nanoTime();
+        return members.entrySet().stream()
+            .filter(entry -> entry.getKey() == id || !peerConflicts.containsKey(entry.getKey()))
+            .filter(entry -> entry.getValue().seed() || now - entry.getValue().lastSeenNanos() <= discoveryTimeoutNanos)
+            .map(entry -> entry.getValue().address())
+            .sorted(Comparator.comparingInt(NodeAddress::id))
+            .toList();
+    }
+    private Optional<NodeAddress> node(int nodeId) {
+        return activeNodes().stream().filter(node -> node.id() == nodeId).findFirst();
+    }
+    private boolean warmingUp() { return System.nanoTime() < electionReadyNanos; }
+    private boolean idConflict() { return System.nanoTime() < selfConflictUntilNanos; }
     private void accept() {
         while (running) {
             try {
@@ -64,16 +147,17 @@ public final class ServerNode implements AutoCloseable {
         return Wire.message(type, r.requestId(), Integer.toString(id), data);
     }
     private TcpMessage coordinatorInfo(TcpMessage r) {
-        var address = nodes.stream().filter(n -> n.id() == coordinatorId).findFirst();
+        var address = node(coordinatorId);
         if (address.isEmpty()) return answer(r, MessageType.ELECTION_IN_PROGRESS, Map.of());
         return answer(r, MessageType.COORDINATOR_INFO, Map.of("id", coordinatorId,
             "host", address.get().host(), "port", address.get().port(), "generation", generation));
     }
     private TcpMessage handle(TcpMessage r) {
+        if (idConflict()) return answer(r, MessageType.ELECTION_IN_PROGRESS, Map.of("error", "Duplicate server ID"));
         switch (r.type()) {
             case ELECTION -> {
                 if (Integer.parseInt(r.senderId()) >= id) return coordinatorInfo(r);
-                log.info("Election received from=" + r.senderId());
+                log.info("ELECTION received from=" + r.senderId() + "; send ELECTION_OK and start own election");
                 startElection();
                 return answer(r, MessageType.ELECTION_OK, Map.of("id", id));
             }
@@ -183,16 +267,19 @@ public final class ServerNode implements AutoCloseable {
         coordinator = false; coordinatorId = 0; queue.clear();
     }
     private void startElection() {
-        if (!running || !election.compareAndSet(false, true)) return;
+        if (!running || warmingUp() || idConflict() || !election.compareAndSet(false, true)) return;
         connections.submit(() -> {
             try {
-                log.info("Election started id=" + id);
+                log.info("Election started id=" + id + "; sending ELECTION to higher IDs");
                 boolean higher = false;
-                for (var node : nodes) if (node.id() > id) {
+                for (var node : activeNodes()) if (node.id() > id) {
                     try {
                         var response = Wire.call(node, Wire.message(MessageType.ELECTION, UUID.randomUUID().toString(), Integer.toString(id), Map.of()), heartbeatTimeout, bindAddress, 0);
                         alive.put(node.id(), true);
-                        if (response.type() == MessageType.ELECTION_OK) { higher = true; log.info("Election OK from=" + node.id()); }
+                        if (response.type() == MessageType.ELECTION_OK) {
+                            higher = true;
+                            log.info("ELECTION_OK (Answer) received from=" + node.id());
+                        }
                     } catch (IOException e) { alive.put(node.id(), false); }
                 }
                 if (higher) {
@@ -216,16 +303,27 @@ public final class ServerNode implements AutoCloseable {
         });
     }
     private void announce() {
-        for (var node : nodes) if (node.id() != id) {
+        for (var node : activeNodes()) if (node.id() != id) {
             try { Wire.call(node, Wire.message(MessageType.COORDINATOR, UUID.randomUUID().toString(), Integer.toString(id),
                 Map.of("id", id, "generation", generation)), heartbeatTimeout, bindAddress, 0); }
             catch (IOException ignored) { }
         }
         announcedGeneration = generation;
+        log.info("COORDINATOR announcement sent id=" + id + " generation=" + generation);
     }
     private void tick() {
         if (!running) return;
         try {
+            expireDiscovery();
+            if (idConflict()) {
+                if (coordinator) demote(true);
+                render("ID_CONFLICT");
+                return;
+            }
+            if (warmingUp()) {
+                render("DISCOVERING");
+                return;
+            }
             if (coordinator) {
                 synchronized (this) {
                     var renewal = worker.control(control("RENEW").build());
@@ -236,19 +334,19 @@ public final class ServerNode implements AutoCloseable {
             } else if (!election.get()) {
                 if (coordinatorId == 0) startElection();
                 else {
-                    var address = nodes.stream().filter(n -> n.id() == coordinatorId).findFirst().orElseThrow();
                     try {
+                        var address = node(coordinatorId).orElseThrow(() -> new IOException("Coordinator not discovered"));
                         var response = Wire.call(address, Wire.message(MessageType.HEARTBEAT, UUID.randomUUID().toString(), Integer.toString(id), Map.of()), heartbeatTimeout, bindAddress, 0);
                         if (response.type() != MessageType.HEARTBEAT_ACK) throw new IOException("Coordinator is not active");
                         failures = 0; alive.put(address.id(), true);
                     } catch (IOException e) {
                         failures++; log.info("Heartbeat timeout coordinator=" + coordinatorId + " failures=" + failures);
-                        if (failures >= failureLimit) { alive.put(address.id(), false); coordinatorId = 0; startElection(); }
+                        if (failures >= failureLimit) { alive.put(coordinatorId, false); coordinatorId = 0; startElection(); }
                     }
                 }
             }
             if (++ticks % 2 == 0) {
-                for (var node : nodes) if (node.id() != id) {
+                for (var node : activeNodes()) if (node.id() != id) {
                     try {
                         var response = Wire.call(node, Wire.message(MessageType.GET_COORDINATOR, UUID.randomUUID().toString(), Integer.toString(id), Map.of()), heartbeatTimeout, bindAddress, 0);
                         alive.put(node.id(), true);
@@ -261,24 +359,28 @@ public final class ServerNode implements AutoCloseable {
                     } catch (IOException e) { alive.put(node.id(), false); }
                 }
             }
-            synchronized (this) {
-                var lines = new StringBuilder("Server " + id + " | " + (coordinator ? "COORDINATOR" : election.get() ? "ELECTING" : "STANDBY")
-                    + " | listen " + listener.getLocalSocketAddress() + "\nCoordinator: " + coordinatorId + " | generation: " + generation + "\n\nServers:\n");
-                for (var node : nodes) lines.append(node).append(" ").append(node.id() == id || alive.getOrDefault(node.id(), false) ? "ALIVE" : "OFFLINE")
-                    .append(node.id() == coordinatorId ? " COORDINATOR" : " STANDBY").append('\n');
-                lines.append("\nRequest queue:\n"); int position = 0;
-                for (var r : queue.values()) lines.append(++position).append(". ").append(Wire.string(r, "clientId")).append(" | ")
-                    .append(Wire.string(r, "username")).append(" | ").append(r.requestId()).append('\n');
-                display = lines.toString();
-            }
+            render(coordinator ? "COORDINATOR" : election.get() ? "ELECTING" : "STANDBY");
         } catch (Exception e) {
             log.info("Server tick failed: " + e.getMessage());
             if (coordinator) demote(false);
         }
     }
+    private synchronized void render(String state) {
+        var lines = new StringBuilder("Server " + id + " | " + state
+            + " | listen " + listener.getLocalSocketAddress() + "\nCoordinator: " + coordinatorId
+            + " | generation: " + generation + "\n\nDiscovered servers:\n");
+        for (var node : activeNodes()) lines.append(node).append(" ")
+            .append(node.id() == id || alive.getOrDefault(node.id(), false) ? "ALIVE" : "OFFLINE")
+            .append(node.id() == coordinatorId ? " COORDINATOR" : " STANDBY").append('\n');
+        lines.append("\nRequest queue:\n"); int position = 0;
+        for (var r : queue.values()) lines.append(++position).append(". ").append(Wire.string(r, "clientId")).append(" | ")
+            .append(Wire.string(r, "username")).append(" | ").append(r.requestId()).append('\n');
+        display = lines.toString();
+    }
     @Override public void close() {
         running = false; // Simulated crash: do not drop lease; Worker must detect expiry.
         try { listener.close(); } catch (IOException ignored) { }
+        if (discovery != null) discovery.close();
         scheduler.shutdownNow(); connections.shutdownNow(); worker.close();
         log.info("Server stopped id=" + id);
     }

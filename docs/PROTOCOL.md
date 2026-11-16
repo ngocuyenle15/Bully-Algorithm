@@ -1,5 +1,15 @@
 # Giao thức và trạng thái
 
+## UDP multicast discovery giữa server
+
+Các server cùng `cluster-id` tham gia `discovery-group:discovery-port` và phát định kỳ thông điệp nhỏ:
+
+```json
+{"version":1,"clusterId":"bully-demo","type":"SERVER_HELLO","nodeId":3,"tcpPort":9003,"bootId":"uuid"}
+```
+
+IP peer được lấy từ địa chỉ nguồn UDP, không lấy từ payload. `bootId` chỉ đại diện lần chạy hiện tại; ID Bully vẫn được cấu hình cố định. Server chờ `discovery-warmup-ms` trước lần bầu cử đầu, loại peer động sau `discovery-timeout-ms`, và từ chối tham gia bầu cử khi phát hiện một process khác dùng cùng ID. `servers` là seed tĩnh tùy chọn và không hết hạn. Discovery chỉ thay thế membership server–server; các giao thức client/Worker bên dưới giữ nguyên.
+
 ## TCP
 
 JSON UTF-8, một thông điệp mỗi dòng, tối đa 64 KB. Mỗi kết nối hiện thực hiện một request/response rồi đóng; Client poll để nhận quyền và cập nhật vị trí hàng đợi. Không cần kết nối TCP lâu dài.
@@ -10,7 +20,7 @@ JSON UTF-8, một thông điệp mỗi dòng, tối đa 64 KB. Mỗi kết nối
 
 Server–server: ELECTION, ELECTION_OK, COORDINATOR, HEARTBEAT, HEARTBEAT_ACK, GET_COORDINATOR, COORDINATOR_INFO.
 
-Client–server: ACCESS_REQUEST hoặc ACCESS_STATUS có đầy đủ clientId/username đều có thể khôi phục yêu cầu sau failover. Server trả ACCESS_GRANTED (sessionId/accessToken/remainingMs), ACCESS_QUEUED (position), COORDINATOR_INFO hoặc ELECTION_IN_PROGRESS. ACCESS_RELEASE cần clientId/sessionId/accessToken. ACCESS_CANCEL cần requestId/clientId. ACCESS_STATUS cho thao tác release/cancel có accepted/error.
+Client–server: Client gửi lặp lại ACCESS_REQUEST với cùng requestId để poll hoặc khôi phục yêu cầu sau failover. Server vẫn chấp nhận ACCESS_STATUS như một truy vấn tương thích. Server trả ACCESS_GRANTED (sessionId/accessToken/remainingMs), ACCESS_QUEUED (position), COORDINATOR_INFO hoặc ELECTION_IN_PROGRESS. ACCESS_RELEASE cần clientId/sessionId/accessToken. ACCESS_CANCEL cần requestId/clientId. ACCESS_STATUS trong phản hồi release/cancel có accepted/error.
 
 Client giữ requestId đến khi hủy, trả quyền hoặc phiên hết hạn. Nếu hàng đợi mất sau failover, client gửi lại cùng ID; thứ tự FIFO mới là thứ tự tiếp nhận lại. Nếu Worker đã tạo phiên trước lúc mất phản hồi, Coordinator mới khôi phục token bằng RESERVE với cùng clientId/requestId.
 

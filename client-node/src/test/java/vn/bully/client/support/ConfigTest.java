@@ -18,6 +18,8 @@ class ConfigTest {
     @Test void invalidNodeConfigurationIsRejected() throws Exception {
         var config = new Config(new String[]{"--servers", "1@127.0.0.1:9001,1@127.0.0.1:9002"});
         assertThrows(IllegalArgumentException.class, config::nodes);
+        assertThrows(IllegalArgumentException.class,
+            () -> new Config(new String[]{"--servers", "0@127.0.0.1:9001"}).nodes());
         assertThrows(IllegalArgumentException.class, () -> NodeAddress.parse("1@127.0.0.1:70000"));
         assertThrows(IllegalArgumentException.class, () -> new Config(new String[]{"--id"}));
     }

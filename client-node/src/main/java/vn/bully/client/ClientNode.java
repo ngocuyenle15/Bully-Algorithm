@@ -85,7 +85,7 @@ public final class ClientNode implements AutoCloseable {
             payload = Map.of("clientId", id, "username", username, "sessionId", session, "accessToken", token);
         }
         MessageType type = currentCommand.equals("CANCEL") ? MessageType.ACCESS_CANCEL : currentCommand.equals("RELEASE")
-            ? MessageType.ACCESS_RELEASE : currentRequest.isEmpty() ? MessageType.GET_COORDINATOR : MessageType.ACCESS_STATUS;
+            ? MessageType.ACCESS_RELEASE : currentRequest.isEmpty() ? MessageType.GET_COORDINATOR : MessageType.ACCESS_REQUEST;
         try {
             var response = Wire.call(address, Wire.message(type, currentRequest.isEmpty() ? UUID.randomUUID().toString() : currentRequest, id, payload), 4000, bindAddress, localPort);
             synchronized (this) {
