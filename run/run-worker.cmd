@@ -2,12 +2,12 @@
 setlocal
 
 set "ROOT=%~dp0.."
-set "JAVA=%ROOT%\runtime\jdk-21.0.10\bin\java.exe"
 set "JAR=%ROOT%\document-worker\target\document-worker-1.0.0-SNAPSHOT.jar"
 set "CONFIG=%ROOT%\document-worker\config\worker.properties"
 
-if not exist "%JAVA%" (
-    echo [ERROR] Java 21 not found: "%JAVA%"
+where java >nul 2>nul
+if errorlevel 1 (
+    echo [ERROR] Java not found in PATH environment variable.
     pause
     exit /b 1
 )
@@ -25,7 +25,7 @@ if not exist "%CONFIG%" (
 
 echo Starting Document Worker...
 pushd "%ROOT%"
-"%JAVA%" -jar "%JAR%" --config "%CONFIG%"
+java -jar "%JAR%" --config "%CONFIG%"
 set "EXIT_CODE=%ERRORLEVEL%"
 popd
 

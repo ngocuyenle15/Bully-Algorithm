@@ -2,15 +2,15 @@
 setlocal
 
 set "ROOT=%~dp0.."
-set "JAVA=%ROOT%\runtime\jdk-21.0.10\bin\java.exe"
 set "JAR=%ROOT%\server-node\target\server-node-1.0.0-SNAPSHOT.jar"
 
 set "NODE_ID=%~1"
 if not defined NODE_ID set "NODE_ID=1"
 set "CONFIG=%ROOT%\server-node\config\server-%NODE_ID%.properties"
 
-if not exist "%JAVA%" (
-    echo [ERROR] Java 21 not found: "%JAVA%"
+where java >nul 2>nul
+if errorlevel 1 (
+    echo [ERROR] Java not found in PATH environment variable.
     pause
     exit /b 1
 )
@@ -30,7 +30,7 @@ if not exist "%CONFIG%" (
 
 echo Starting Server Node %NODE_ID%...
 pushd "%ROOT%"
-"%JAVA%" -jar "%JAR%" --config "%CONFIG%"
+java -jar "%JAR%" --config "%CONFIG%"
 set "EXIT_CODE=%ERRORLEVEL%"
 popd
 
