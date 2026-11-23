@@ -1,6 +1,8 @@
 """Sinh báo cáo đồ án dạng Word (.docx).
 
+Cài:   py -m pip install -r docs/report/requirements.txt   (phiên bản đã pin)
 Chạy:  py docs/report/build_report.py
+Sau khi sinh: mở bằng Word, nhấn F9 (hoặc Update Field) để điền mục lục.
 Kết quả: docs/BaoCao_DoAn_Bully.docx
 """
 import os
@@ -101,7 +103,15 @@ def bullets(items, style="List Bullet"):
 
 
 def numbered(items):
-    bullets(items, "List Number")
+    # Word's "List Number" style keeps counting across the whole document (a later list starts at 3, 4…),
+    # so each list is numbered explicitly and restarts at 1.
+    for i, it in enumerate(items, 1):
+        para = doc.add_paragraph()
+        para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        para.paragraph_format.left_indent = Cm(1.0)
+        para.paragraph_format.first_line_indent = Cm(-0.6)
+        para.paragraph_format.space_after = Pt(3)
+        _runs(para, f"{i}. {it}")
 
 
 def h(text, level):
@@ -153,6 +163,12 @@ def table(header, rows, caption=None, widths=None):
             para.paragraph_format.first_line_indent = None
             _runs(para, str(text), size=11)
     if widths:
+        # Word ignores per-cell widths while the table autofits; fix the layout and the grid columns too.
+        t.autofit = False
+        layout = OxmlElement("w:tblLayout"); layout.set(qn("w:type"), "fixed")
+        t._tbl.tblPr.append(layout)
+        for i, w in enumerate(widths):
+            t.columns[i].width = Cm(w)
         for row in t.rows:
             for i, w in enumerate(widths):
                 row.cells[i].width = Cm(w)
@@ -531,7 +547,7 @@ figure(FIG["state"], "Máy trạng thái của một server-node")
 
 h("4.5.1. Lease và fencing", 3)
 p("Worker giữ ba biến: `coordinator`, `generation`, `leaseUntil`. `CLAIM` thành công khi lease cũ đã hết hạn "
-  "(hoặc chính chủ lease xin lại), khi đó `generation++` và `leaseUntil = now + lease-ms` (5 s). Coordinator gia hạn "
+  "(ID khác hay chính ID đó đều phải chờ – chống process trùng ID cướp lease), khi đó `generation++` và `leaseUntil = now + lease-ms` (5 s). Coordinator gia hạn "
   "bằng `RENEW` mỗi giây. Mọi lệnh khác ngoài CLAIM phải mang đúng `(coordinatorId, generation)` và lease còn hạn, "
   "nếu không bị từ chối với lỗi “Stale coordinator or expired lease”. Hệ quả:")
 bullets([
@@ -632,8 +648,8 @@ table(["Máy", "IP", "Tiến trình", "Cổng mở (inbound)", "Lệnh chạy"],
 p("Các bước triển khai:")
 numbered([
     "Cấu hình **DHCP reservation** (gán IP cố định theo MAC) trên router cho 6 máy. Lưu ý nhiều router đặt dải DHCP động bắt đầu từ .100, nên phải reservation chứ không chỉ “hy vọng” máy nhận đúng IP.",
-    "Đặt network profile của Windows là **Private**; chạy `run\\setup-firewall.cmd worker` trên máy Worker và `run\\setup-firewall.cmd server` trên 5 máy node (quyền Administrator). Rule chỉ mở cho nguồn `192.168.0.0/24`.",
-    "Build một lần bằng `scripts\\build.ps1` rồi chép thư mục dự án (có `target/*.jar`) sang các máy; mỗi máy cần Java 21 trở lên trong PATH.",
+    "Đặt network profile của Windows là **Private**; chạy `run\\setup-firewall.cmd worker` trên máy Worker và `run\\setup-firewall.cmd server` trên 5 máy node (quyền Administrator). Rule chỉ mở cho nguồn `192.168.0.0/24`. Script cảnh báo nếu còn rule **Block** cho java.exe (Windows tự tạo khi người dùng bấm Cancel ở hộp thoại firewall; rule Block luôn thắng rule Allow).",
+    "Build một lần bằng `scripts\\build.ps1` rồi chép thư mục dự án (có `target/*.jar`) sang các máy; mỗi máy cần Java 21 trở lên trong PATH (script kiểm tra phiên bản).",
     "Chạy Worker trước, sau đó 5 server, cuối cùng các client. Nếu không truyền tham số, `run-server.cmd` / `run-client.cmd` tự suy ra ID từ IP `192.168.0.10x` của máy.",
 ])
 p("Script `run-server.cmd` kiểm tra ID thuộc 1..5 và máy thực sự có IP `192.168.0.10<ID>` trước khi khởi chạy, "
@@ -662,14 +678,16 @@ table(["Bộ test", "Số test", "Nội dung"], [
     ["server-node ConfigTest", "3", "Đọc cấu hình UTF-8, ghi đè bằng tham số dòng lệnh, kiểm tra bind/port"],
     ["client-node ConfigTest", "3", "Như trên cho client"],
     ["document-worker ConfigTest", "3", "Như trên cho Worker"],
-    ["WorkerStateTest", "11", "Lease, generation, fencing, re-claim, token, timeout, yêu cầu đồng thời"],
+    ["WorkerStateTest", "11", "Lease, generation, fencing, ID trùng không cướp lease, token, timeout, yêu cầu đồng thời"],
+    ["ClientNodeTest", "2", "Client theo generation lớn nhất; reply hỏng không làm client ngừng"],
     ["PdfServiceTest", "5", "Merge, Split, Watermark và giới hạn kích thước"],
-    ["DistributedIntegrationTest", "7", "FIFO + failover + restart; yêu cầu đồng thời; Coordinator chết khi có 3 yêu cầu; client phục hồi; node thấp restart không gây bầu chọn vô hạn; node cao mất Worker không chặn bầu chọn; client chờ bị ngắt"],
+    ["DistributedIntegrationTest", "9", "FIFO + failover + restart; yêu cầu đồng thời; Coordinator chết khi có 3 yêu cầu; client phục hồi; node thấp restart; node cao mất Worker; client chờ bị ngắt; node đang warm-up không trả ELECTION_OK; 10 peer không phản hồi không làm mất lease"],
+    ["test-run-scripts.ps1", "45 case", "Các file run\\*.cmd: ID/IP, tham số lách luật, phiên bản Java, đường dẫn có “!”, kèm mutation"],
     ["*ViewTest (JavaFX)", "3", "Mở giao diện; chỉ chạy với cờ `-Ui` (cần màn hình)"],
 ], "Các bộ kiểm thử", widths=[4.5, 1.7, 9.8])
-p("Kết quả lần chạy ngày 23/11/2026 trên nhánh sửa lỗi: **32/32 test không cần giao diện đạt** (0 failure, "
-  "0 error), trong đó 7 integration test đa JVM mất khoảng 61 giây; 3 test giao diện được bỏ qua do chạy không "
-  "có màn hình.")
+p("Kết quả lần chạy ngày 23/11/2026 trên nhánh sửa lỗi: **36/36 test Java không cần giao diện đạt** (0 failure, "
+  "0 error), gồm 9 integration test đa JVM; 3 test giao diện được bỏ qua do chạy không có màn hình; 42/45 case "
+  "kiểm thử script. Mỗi guard mới đều có mutation test: cố ý làm hỏng guard thì test tương ứng phải thất bại.")
 
 h("6.2. Kịch bản kiểm thử thủ công trên LAN", 2)
 table(["#", "Thao tác", "Kết quả mong đợi"], [
@@ -698,14 +716,20 @@ table(["Mã", "Lỗi", "Hậu quả", "Cách sửa"], [
     ["L4", "Client chọn câu trả lời `COORDINATOR_INFO` **đầu tiên** theo thứ tự server 1→5",
      "Trong lúc failover, server 1 còn nhớ Coordinator đã chết → client bị chỉ tới node chết lặp đi lặp lại",
      "Hỏi song song mọi server, chọn câu trả lời có **generation lớn nhất** (generation do Worker cấp, tăng đơn điệu)"],
-    ["L5", "RENEW timeout làm Coordinator tự hạ cấp nhưng không thể CLAIM lại lease của chính mình",
-     "Không có Coordinator tới khi lease cũ hết (≤ 5 s)",
-     "Worker cho phép chủ lease CLAIM lại; generation vẫn tăng nên lệnh cũ bị fencing"],
+    ["L5", "Một lần RENEW lỗi tạm thời (timeout gRPC) làm Coordinator hạ cấp ngay dù lease vẫn còn hạn",
+     "Không ai CLAIM được lease còn hạn → cụm không có Coordinator tới 5 s",
+     "Server giữ hạn lease cục bộ (đo từ lúc gửi nên không muộn hơn Worker), chỉ hạ cấp khi đã quá hạn. Phương án đầu (cho chủ lease CLAIM lại ở Worker) bị loại khi review vì process trùng ID có thể cướp lease"],
     ["L6", "Biến `failures` được ghi từ nhiều luồng không đồng bộ", "Data race (nhỏ)", "Khai báo `volatile`"],
     ["L7", "File `.cmd` mặc định ID = 1, kết thúc dòng LF", "Chạy nhầm ID trên máy khác; cmd.exe có thể nhảy nhãn sai với LF",
      "Tự nhận ID theo IP, kiểm tra IP, `.gitattributes` ép CRLF"],
-    ["L8", "README ghi 56 test, thực tế 34", "Tài liệu sai sự thật", "Cập nhật bảng test đúng thực tế"],
-], "Các lỗi phát hiện và đã sửa", widths=[1, 4, 5.5, 5.5])
+    ["L8", "README và TESTING.md ghi 56 test và 5 lớp test không tồn tại; thực tế 34", "Tài liệu sai sự thật", "Cập nhật bảng test đúng thực tế"],
+    ["L9", "`run-server.cmd` không tham số báo “The syntax of the command is incorrect”", "Kịch bản tự nhận ID – cách dùng chính – hỏng hoàn toàn", "Biến luôn có giá trị trước khi lấy chuỗi con; test bắt mọi lỗi cú pháp cmd"],
+    ["L10", "Tham số thứ 2 trở đi được chuyển thẳng cho Java", "`run-server.cmd 3 --id 5` lách kiểm tra ID/IP", "Chỉ chấp nhận `--headless`"],
+    ["L11", "`EnableDelayedExpansion` trong script", "Thư mục có dấu `!` → không tìm thấy JAR", "Bỏ delayed expansion; test chạy trong thư mục có `!`"],
+    ["L12", "Script firewall báo thành công giả; không phát hiện rule Block cho java.exe", "Cổng vẫn đóng dù script báo “Đã mở”", "`$ErrorActionPreference='Stop'`; cảnh báo rule Block (chính máy dev có 4 rule như vậy)"],
+    ["L13", "Ngoại lệ trong `discover()` của client thoát khỏi tác vụ định kỳ", "ScheduledExecutorService âm thầm hủy tác vụ → client “đóng băng” vĩnh viễn", "Bắt lỗi theo từng server và bao toàn bộ tick"],
+    ["L14", "`start-demo.ps1` dùng config LAN để chạy 11 tiến trình trên một máy", "Cả 5 server chết ngay vì không có IP 192.168.0.10x", "Ghi đè sang 127.0.0.1:9001–9005; báo lỗi nếu tiến trình chết khi khởi động"],
+], "Các lỗi phát hiện và đã sửa", widths=[1.4, 3.9, 5.4, 5.3])
 
 h("6.4. Giới hạn", 2)
 bullets([

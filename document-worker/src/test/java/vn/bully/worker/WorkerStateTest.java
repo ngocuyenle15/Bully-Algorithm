@@ -49,10 +49,12 @@ class WorkerStateTest {
     @Test void anotherCoordinatorCannotClaimValidLease() {
         assertFalse(state.control(ControlRequest.newBuilder().setAction("CLAIM").setCoordinatorId(2).build()).getAccepted());
     }
-    @Test void holderCanReclaimAndOldGenerationIsFenced() {
-        var reclaim = state.control(ControlRequest.newBuilder().setAction("CLAIM").setCoordinatorId(3).build());
-        assertTrue(reclaim.getAccepted()); assertEquals(generation + 1, reclaim.getGeneration());
-        assertFalse(state.control(control("RENEW").build()).getAccepted()); // old generation rejected
+    @Test void sameIdCannotClaimValidLease() {
+        // A second process started with the same ID (duplicate not yet detected) must not steal the live lease.
+        var duplicate = state.control(ControlRequest.newBuilder().setAction("CLAIM").setCoordinatorId(3).build());
+        assertFalse(duplicate.getAccepted());
+        assertEquals(generation, duplicate.getGeneration());
+        assertTrue(state.control(control("RENEW").build()).getAccepted());
     }
     @Test void jobLongerThanTimeoutKeepsSessionAndResetsIdleTimer() {
         var s = reserve("a", "r"); state.begin(job(s), "Merge"); clock.addAndGet(90000);

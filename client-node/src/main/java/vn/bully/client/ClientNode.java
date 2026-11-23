@@ -71,12 +71,22 @@ public final class ClientNode implements AutoCloseable {
                     bestGeneration = generation;
                     best = new NodeAddress(Wire.integer(response, "id"), Wire.string(response, "host"), Wire.integer(response, "port"));
                 }
-            } catch (ExecutionException ignored) {
-            } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+            } catch (InterruptedException e) { Thread.currentThread().interrupt(); break;
+            } catch (ExecutionException | RuntimeException ignored) {
+                // Unreachable server or malformed reply (e.g. non-numeric id/generation): skip that server only.
+            }
         }
         return best;
     }
+    /**
+     * ScheduledExecutorService silently cancels a periodic task whose run throws, so an unexpected exception
+     * here would freeze the client forever. Contain it and keep polling.
+     */
     private void tick() {
+        try { tickOnce(); }
+        catch (RuntimeException e) { log.info("Client tick failed: " + e); }
+    }
+    private void tickOnce() {
         if (!running) return;
         try {
             // Query Worker independently of Coordinator so an existing session survives failover.

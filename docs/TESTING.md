@@ -1,25 +1,27 @@
 # Kiểm thử và demo
 
-## Kết quả xác nhận ngày 08/11/2026
+## Kết quả xác nhận ngày 23/11/2026
 
-Build thành công cả ba project độc lập trên Java 21. Tổng cộng 56 test: 9 cấu hình, 10 Bully/cluster/discovery, 3 client/lưu kết quả, 10 session/lease, 5 PDF, 4 tích hợp nhiều JVM, 3 JavaFX và 12 kiểm tra kích thước cửa sổ. Kết quả là 0 failure, 0 error và 0 skipped khi chạy đủ các cờ. Ba JAR ứng dụng đều có Main-Class hợp lệ và hợp đồng Protobuf đồng nhất.
+Bảng dưới liệt kê đúng các lớp test đang có trong repo (bản trước ghi 56 test và các lớp `BullyElectionTest`, `ServerClusterTest`, `PeerDiscoveryTest`, `ResultSaveTest`, `WindowSizingTest` không tồn tại).
 
-Các nhóm được chạy riêng theo cờ tương ứng; không phải toàn bộ 56 test chạy trong lệnh Maven mặc định. Có thể tái hiện bằng `scripts/build.ps1 -Integration -Ui`.
+| Lệnh | Kết quả |
+|---|---|
+| `powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 -Integration` | 36 test không cần màn hình đạt, 0 failure, 0 error; 3 `*ViewTest` bỏ qua (cần `-Ui`) |
+| `powershell -ExecutionPolicy Bypass -File .\scripts\test-run-scripts.ps1` | 45 case cho `run\*.cmd` (kể cả mutation), 0 failed/survived |
+| `bash scripts/mutation-java.sh` | Mutation các guard Java; xem bảng trong báo cáo review |
 
 ## Các kiểm thử tự động
 
-| Nhóm | Số test | Nội dung |
+| Bộ test | Số test | Nội dung |
 |---|---:|---|
-| ConfigTest trong mỗi ứng dụng | 9 | Cấu hình UTF-8, ghi đè từ dòng lệnh, bind/port và từ chối cấu hình node không hợp lệ |
-| BullyElectionTest, ServerClusterTest, PeerDiscoveryTest | 10 | Vòng bầu cử, Answer/Coordinator, retry khi thiếu công bố, timeout, node ID cao phục hồi, membership động, ID trùng và cluster không liên quan |
-| ClientNodeTest, ResultSaveTest | 3 | Reconnect giữ nguyên request, cancel/release không phụ thuộc Worker endpoint và ghi kết quả an toàn |
-| WorkerStateTest | 10 | 20 yêu cầu đồng thời, token, lease, generation cũ, request gửi lại, timeout, job dài, release khi đang xử lý |
-| PdfServiceTest | 5 | Merge, Split, Watermark, dữ liệu lỗi/quá dung lượng, tài nguyên kế thừa; PDF mẫu chứa chữ và hình ảnh |
-| DistributedIntegrationTest | 4 | JVM riêng, server không nhận danh sách `servers` và tự discovery multicast: FIFO/PDF/failover/restart/khôi phục grant/timeout; ba request đồng thời; ba client thật reconnect và client giữ quyền chết; Coordinator chết với ba request chưa đọc phản hồi |
-| Các ViewTest | 3 | Mở/render JavaFX, nút Stop Server, trạng thái Client vô hiệu hóa xử lý khi chưa có quyền |
-| WindowSizingTest trong mỗi ứng dụng | 12 | DPI, taskbar, nhiều màn hình, tọa độ âm và giới hạn kích thước cửa sổ |
+| `ConfigTest` trong mỗi ứng dụng | 3 × 3 | Cấu hình UTF-8, ghi đè từ dòng lệnh, bind/port và từ chối cấu hình node không hợp lệ |
+| `ClientNodeTest` | 2 | Client theo `generation` lớn nhất chứ không theo server trả lời đầu tiên; reply hỏng không làm client ngừng hoạt động |
+| `WorkerStateTest` | 11 | 20 yêu cầu đồng thời, token, lease, generation cũ, ID trùng không cướp lease còn hạn, request gửi lại, timeout, job dài, release khi đang xử lý |
+| `PdfServiceTest` | 5 | Merge, Split, Watermark, dữ liệu lỗi/quá dung lượng |
+| `DistributedIntegrationTest` | 9 | JVM riêng, discovery multicast: FIFO/PDF/failover/restart/timeout; request đồng thời; client thật reconnect; Coordinator chết với request chưa đọc phản hồi; node thấp restart; node cao mất Worker; client chờ bị ngắt; node đang warm-up không trả ELECTION_OK; 10 peer không phản hồi không làm mất lease |
+| `*ViewTest` | 3 | Mở/render JavaFX (chỉ chạy với `-Ui`) |
 
-Integration và UI được bật riêng; mặc định Maven bỏ qua hai nhóm này. Test tích hợp dùng timeout ngắn hơn demo để không phải chờ 60 giây; WorkerStateTest kiểm tra ranh giới 60 giây bằng đồng hồ giả lập. Phiên đang xử lý vượt quá 60 giây cũng được kiểm tra bằng đồng hồ giả lập.
+Tổng cộng 39 test Java. Integration và UI được bật riêng; mặc định Maven bỏ qua hai nhóm này.
 
 ## Đối chiếu TC01–TC16
 
@@ -46,13 +48,13 @@ Các test này kiểm tra trên localhost Windows. Chưa thay thế kiểm tra f
 
 ## Kịch bản demo
 
-1. Build rồi chạy `scripts/start-demo.ps1`; đợi Server 3 là Coordinator.
+1. Build rồi chạy `scripts/start-demo.ps1` (chạy cả 11 tiến trình trên một máy, ghi đè sang `127.0.0.1`, port 9001–9005); đợi Server 5 là Coordinator.
 2. Client 1 Request Access; Client 2 và Client 3 lần lượt Request Access. Kiểm tra Worker giữ Client 1, hàng đợi là Client 2 → Client 3.
 3. Client 1 Merge `document-worker/samples/sample-1.pdf` và `document-worker/samples/sample-2.pdf`; lưu và mở kết quả 5 trang. Kiểm tra Worker trở về RESERVED.
 4. Client 1 Split trang 1–2 hoặc Watermark; vẫn giữ cùng session.
-5. Stop Server 3; đợi Server 2 là Coordinator. Client 1 vẫn xử lý được; Client 2/3 tự kết nối lại và gửi lại yêu cầu. Thứ tự queue sau lỗi có thể thay đổi.
+5. Stop Server 5; đợi Server 4 là Coordinator. Client 1 vẫn xử lý được; Client 2/3 tự kết nối lại và gửi lại yêu cầu. Thứ tự queue sau lỗi có thể thay đổi.
 6. Release Access tại Client 1; một client chờ được cấp quyền, chỉ client đó được bật nút Process.
-7. Chạy lại Server 3 bằng cấu hình server-3; sau bầu chọn Server 3 nhận quyền điều phối, phiên client không bị hủy.
+7. Chạy lại Server 5 (cùng tham số ghi đè như `start-demo.ps1`); sau bầu chọn Server 5 nhận quyền điều phối, phiên client không bị hủy.
 8. Đóng client đang giữ phiên mà không Release; chờ 60 giây mặc định, kiểm tra client chờ tiếp theo được cấp quyền.
 9. Hủy một yêu cầu đang chờ và kiểm tra hàng đợi cập nhật.
 

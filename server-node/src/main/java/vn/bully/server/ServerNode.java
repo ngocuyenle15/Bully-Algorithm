@@ -44,6 +44,8 @@ public final class ServerNode implements AutoCloseable {
     private volatile int failures;
     private volatile String display = "Starting";
     private volatile long announcedGeneration = -1;
+    /** Local, conservative copy of the Worker lease expiry (monotonic clock). */
+    private volatile long leaseDeadlineNanos;
 
     public ServerNode(Config config) throws IOException {
         id = config.number("id", 1);
@@ -395,9 +397,11 @@ public final class ServerNode implements AutoCloseable {
                     Thread.sleep(electionTimeout);
                     synchronized (this) {
                         if (!running || coordinator) return;
+                        long sent = System.nanoTime();
                         var result = worker.control(ControlRequest.newBuilder().setAction("CLAIM").setCoordinatorId(id).build());
                         markWorkerReachable();
                         if (result.getAccepted()) {
+                            leaseDeadlineNanos = sent + TimeUnit.MILLISECONDS.toNanos(result.getLeaseRemainingMs());
                             coordinator = true; coordinatorId = id; generation = result.getGeneration(); failures = 0;
                             log.info("Coordinator elected id=" + id + " generation=" + generation);
                         } else log.info("Waiting for coordinator lease expiry");
@@ -432,10 +436,15 @@ public final class ServerNode implements AutoCloseable {
             }
             if (coordinator) {
                 synchronized (this) {
+                    long sent = System.nanoTime();
                     var renewal = worker.control(control("RENEW").build());
                     markWorkerReachable();
                     if (!renewal.getAccepted()) { log.info("Coordinator lease lost"); demote(false); }
-                    else { expireQueue(); pump(); }
+                    else {
+                        // Measured from the send time, so the local deadline is never later than the Worker's.
+                        leaseDeadlineNanos = sent + TimeUnit.MILLISECONDS.toNanos(renewal.getLeaseRemainingMs());
+                        expireQueue(); pump();
+                    }
                 }
                 if (coordinator && announcedGeneration != generation) {
                     announcedGeneration = generation; // announce asynchronously: never delay lease renewal
@@ -465,7 +474,11 @@ public final class ServerNode implements AutoCloseable {
             render(coordinator ? "COORDINATOR" : !workerHealthy() ? "WORKER_UNREACHABLE" : election.get() ? "ELECTING" : "STANDBY");
         } catch (Exception e) {
             log.info("Server tick failed: " + e.getMessage());
-            if (coordinator) demote(false);
+            // A single failed RENEW (gRPC deadline, transient network error) must not throw away a lease that the
+            // Worker still considers valid: nobody else can claim it before it expires anyway, so stepping down early
+            // only leaves the cluster without a Coordinator. Every access operation is still fenced by the Worker.
+            if (coordinator && System.nanoTime() >= leaseDeadlineNanos) demote(false);
+            else if (coordinator) log.info("Keeping coordinator role until local lease deadline; will retry RENEW");
         }
     }
     /**

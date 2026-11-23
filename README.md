@@ -268,7 +268,7 @@ worker=192.168.0.100:9100
 
 ### 11.3. Mở tường lửa (Firewall) trên các máy trong LAN
 
-Cách nhanh: chạy `run\setup-firewall.cmd worker` trên máy Worker và `run\setup-firewall.cmd server` trên 5 máy node (quyền Administrator; rule chỉ nhận nguồn `192.168.0.0/24`). Đặt network profile Windows là **Private**. IP các máy nên được gán bằng **DHCP reservation** trên router — nhiều router cấp dải động bắt đầu từ `.100`, dễ trùng với Worker.
+Cách nhanh: chạy `run\setup-firewall.cmd worker` trên máy Worker và `run\setup-firewall.cmd server` trên 5 máy node (quyền Administrator; rule chỉ nhận nguồn `192.168.0.0/24`). Script cảnh báo nếu có rule **Block** inbound cho `java.exe` — Windows tự tạo rule này khi ai đó bấm Cancel ở hộp thoại firewall lần đầu chạy Java, và rule Block luôn thắng rule Allow. Đặt network profile Windows là **Private**. IP các máy nên được gán bằng **DHCP reservation** trên router — nhiều router cấp dải động bắt đầu từ `.100`, dễ trùng với Worker.
 
 Hoặc làm thủ công: trước khi chạy, mở PowerShell (quyền Administrator) trên các máy để cho phép kết nối LAN:
 
@@ -313,7 +313,7 @@ Trên mỗi máy, mở một cửa sổ terminal và chạy đúng cấu hình c
   ```powershell
   java -jar server-node/target/server-node-1.0.0-SNAPSHOT.jar --config server-node/config/server-5.properties
   ```
-*(Hoặc dùng `run\run-server.cmd <id>` với `<id>` từ `1` đến `5`. Bỏ trống `<id>` thì script tự suy ra ID từ IP `192.168.0.10x` của máy; script từ chối chạy nếu máy không có IP `192.168.0.10<id>` khớp với `bind-address` của cấu hình).*
+*(Hoặc dùng `run\run-server.cmd <id> [--headless]` với `<id>` từ `1` đến `5`. Bỏ trống `<id>` thì script tự suy ra ID từ IP `192.168.0.10x` của máy. Script từ chối chạy nếu: máy không có IP `192.168.0.10<id>` ở trạng thái Preferred (trùng IP cũng bị chặn), Java dưới 21, hoặc có tham số khác `--headless` (ví dụ `--id`, `--bind-address` sẽ lách kiểm tra ID/IP).)*
 
 Sau khoảng 2.5 giây warm-up, 5 Server tự phát hiện nhau qua multicast `239.255.42.99:8999` và **Server 5 (`192.168.0.105:9000`)** được bầu làm **COORDINATOR**.
 
@@ -385,12 +385,15 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 -Integration -Ui
 | Bộ test | Số test | Nội dung |
 |---|---:|---|
 | `ConfigTest` (server/client/worker) | 3 × 3 | UTF-8, CLI override, bind/port, multicast và ID |
-| `WorkerStateTest` | 11 | Lease, generation, fencing, re-claim của chủ lease, token, timeout và request đồng thời |
+| `WorkerStateTest` | 11 | Lease, generation, fencing, process trùng ID không cướp lease, token, timeout và request đồng thời |
+| `ClientNodeTest` | 2 | Client theo `generation` lớn nhất thay vì server trả lời đầu tiên; reply hỏng không làm client ngừng |
 | `PdfServiceTest` | 5 | Merge, Split, Watermark và giới hạn dữ liệu |
-| `DistributedIntegrationTest` (đa JVM) | 7 | Discovery không seed, FIFO, failover, restart node cao, node thấp restart không gây bầu vô hạn, node cao mất Worker không chặn bầu cử, client recovery, client chờ bị ngắt |
+| `DistributedIntegrationTest` (đa JVM) | 9 | Discovery không seed, FIFO, failover, restart node cao, node thấp restart không gây bầu vô hạn, node cao mất Worker không chặn bầu cử, client recovery, client chờ bị ngắt, node đang warm-up không trả `ELECTION_OK`, 10 peer không phản hồi không làm mất lease |
 | `*ViewTest` (JavaFX) | 3 | Mở/render Server, Client và Worker (chỉ chạy với `-Ui`, cần màn hình) |
 
-Tổng cộng 35 test. Lần xác nhận ngày 23/11/2026 (`build.ps1 -Integration`): 32 test không cần giao diện đều đạt, 0 failure, 0 error; 3 test JavaFX bỏ qua khi không bật `-Ui`. Báo cáo nằm trong `target/surefire-reports/`; log integration nằm trong `document-worker/target/integration-*`.
+Tổng cộng 39 test Java. Lần xác nhận ngày 23/11/2026 (`build.ps1 -Integration`): 36 test không cần giao diện đều đạt, 0 failure, 0 error; 3 test JavaFX bỏ qua khi không bật `-Ui`.
+
+Script chạy node được kiểm thử riêng (sandbox, Java giả, có mutation test): `powershell -ExecutionPolicy Bypass -File .\scripts\test-run-scripts.ps1` → 45 case. Mutation test cho các guard Java: `bash scripts/mutation-java.sh`. Báo cáo nằm trong `target/surefire-reports/`; log integration nằm trong `document-worker/target/integration-*`.
 
 ## 15. Kịch bản bảo vệ đề tài (trên mạng LAN 5 Node)
 

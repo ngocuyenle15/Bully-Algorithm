@@ -61,14 +61,16 @@ class DistributedIntegrationTest {
         }
     }
     private void startServer(int id) throws Exception { startServer(id, "127.0.0.1:" + workerPort); }
-    private void startServer(int id, String workerAddress) throws Exception {
+    private void startServer(int id, String workerAddress, String... overrides) throws Exception {
         String name = "server-" + id + "-" + processes.size();
         serverLogs.put(id, logs.resolve(name + ".log"));
-        serverProcesses.put(id, launch("server-node", name,
+        var args = new ArrayList<>(List.of(
             "--id", "" + id, "--port", "" + nodes.get(id - 1).port(), "--worker", workerAddress,
             "--cluster-id", clusterId, "--discovery-group", "239.255.42.99", "--discovery-port", "" + discoveryPort,
             "--discovery-interval-ms", "100", "--discovery-timeout-ms", "700", "--discovery-warmup-ms", "400",
             "--heartbeat-ms", "200", "--heartbeat-timeout-ms", "200", "--heartbeat-failures", "3", "--election-ms", "300"));
+        args.addAll(List.of(overrides)); // later options win in Config
+        serverProcesses.put(id, launch("server-node", name, args.toArray(String[]::new)));
     }
     private void killServer(int id) throws Exception { var process = serverProcesses.get(id); process.destroyForcibly(); assertTrue(process.waitFor(5, TimeUnit.SECONDS)); }
     private void awaitCoordinator(int id) throws Exception {
@@ -247,5 +249,59 @@ class DistributedIntegrationTest {
         long waited = (System.nanoTime() - start) / 1_000_000;
         assertTrue(waited < 8000, "waiting client must not wait for the dead client's session timeout (10 s)");
         assertEquals("waiting", worker.status().getClientId());
+    }
+
+    private long countLines(Path log, String text) throws Exception {
+        return Files.readAllLines(log).stream().filter(line -> line.contains(text)).count();
+    }
+
+    @Test void warmingUpHigherNodeNeitherAnswersOkNorTriggersElection() throws Exception {
+        // Regression: a node still in discovery warm-up answered ELECTION_OK although it could not run its own
+        // election yet, and the coordinator re-ran an election against it every probe; both made C2 drop its lease.
+        killServer(3); awaitCoordinator(2);
+        long electionsBefore = countLines(serverLogs.get(2), "Election started id=2");
+        startServer(3, "127.0.0.1:" + workerPort, "--discovery-warmup-ms", "5000");
+        await(() -> { call(3, MessageType.GET_COORDINATOR, "1", "probe", Map.of()); return true; }, 8000);
+        Thread.sleep(1000); // let server 3 reach the Worker once, so only the warm-up keeps it ineligible
+        var reply = call(3, MessageType.ELECTION, "1", "warm-up-election", Map.of());
+        assertNotEquals(MessageType.ELECTION_OK, reply.type(), "a warming-up node must not promise to take over");
+        assertEquals(false, reply.payload().get("eligible"));
+        assertStableView(2, 1500, 1, 2);
+        assertEquals(electionsBefore, countLines(serverLogs.get(2), "Election started id=2"),
+            "coordinator must not start elections against an ineligible higher node");
+        awaitCoordinator(3); // after warm-up the higher node still wins (Bully)
+    }
+
+    @Test void unresponsivePeersDoNotStarveLeaseRenewal() throws Exception {
+        // Regression (LAN): a powered-off machine does not refuse TCP, every call to it waits for the full timeout.
+        // Peer probes used to run sequentially on the lease-renewal thread, so a few dead peers delayed RENEW past
+        // lease-ms and the live coordinator lost its lease. Black-hole peers accept TCP and never answer.
+        var holes = new ArrayList<ServerSocket>();
+        var held = new CopyOnWriteArrayList<Socket>();
+        var acceptors = Executors.newVirtualThreadPerTaskExecutor();
+        try {
+            var seeds = new ArrayList<String>();
+            for (int peer = 11; peer <= 20; peer++) {
+                var hole = new ServerSocket(0, 50, InetAddress.getLoopbackAddress()); holes.add(hole);
+                seeds.add(peer + "@127.0.0.1:" + hole.getLocalPort());
+                acceptors.submit(() -> { while (!hole.isClosed()) held.add(hole.accept()); return null; });
+            }
+            killServer(3);
+            startServer(3, "127.0.0.1:" + workerPort, "--servers", String.join(",", seeds));
+            awaitCoordinator(3);
+            long generation = worker.status().getGeneration();
+            long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (System.nanoTime() < end) {
+                var status = worker.status();
+                assertEquals(3, status.getCoordinatorId());
+                assertEquals(generation, status.getGeneration(), "coordinator lost its lease and re-claimed it");
+                assertTrue(status.getLeaseRemainingMs() > 0, "lease expired while 10 peers were unresponsive");
+                Thread.sleep(100);
+            }
+        } finally {
+            for (var hole : holes) hole.close();
+            for (var socket : held) socket.close();
+            acceptors.shutdownNow();
+        }
     }
 }
