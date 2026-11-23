@@ -32,7 +32,7 @@ Control actions:
 
 | Action | Ý nghĩa |
 |---|---|
-| CLAIM | Xin lease khi lease hiện tại hết hạn; tăng generation |
+| CLAIM | Xin lease khi lease hiện tại hết hạn, hoặc chính chủ lease xin lại; luôn tăng generation |
 | RENEW | Gia hạn lease có ID/generation hợp lệ |
 | DROP | Nhường lease khi phát hiện node cao hơn; giữ nguyên phiên client |
 | STATUS | Kiểm tra quyền điều phối và lấy trạng thái |
@@ -50,7 +50,8 @@ Ngoài CLAIM, mọi Control yêu cầu coordinatorId và generation khớp cùng
 - Lease Coordinator và session client độc lập. Generation mới không hủy token client hiện có.
 - Node cao hơn quay lại khiến Coordinator hiện tại nhường lease sau khi nhận ELECTION_OK; ứng viên mới chỉ công bố sau khi Worker chấp nhận.
 - Coordinator nhận ELECTION từ node thấp hơn thì trả ELECTION_OK và gửi lại COORDINATOR. Follower nhận ELECTION_OK không xóa Coordinator đang biết; follower chỉ nhận Coordinator mới (qua HEARTBEAT/GET_COORDINATOR) khi Worker xác nhận lease của ID đó còn hiệu lực.
-- Node không liên lạc được Worker trong `heartbeat-ms × heartbeat-failures + 3 s` sẽ trả ELECTION_IN_PROGRESS thay cho ELECTION_OK và không tự ứng cử (trạng thái `WORKER_UNREACHABLE`).
+- Node chỉ trả ELECTION_OK khi đủ điều kiện (`eligible`): đã hết warm-up, không trùng ID và đã liên lạc được Worker trong `heartbeat-ms × heartbeat-failures + 3 s`. Ngược lại trả ELECTION_IN_PROGRESS và không tự ứng cử (trạng thái `WORKER_UNREACHABLE`). `COORDINATOR_INFO`/`ELECTION_IN_PROGRESS` kèm cờ `eligible`; Coordinator chỉ nhường cho node cao hơn đủ điều kiện.
+- Client hỏi song song mọi server và chọn `COORDINATOR_INFO` có `generation` lớn nhất.
 - Entry trong hàng đợi bị xóa nếu client không poll lại trong `queue-timeout-ms` (mặc định 3000; client poll mỗi 700 ms). Phiên do Coordinator RESERVE cho client đầu hàng mà client không nhận `ACCESS_GRANTED` trong khoảng này sẽ bị thu hồi (chỉ khi chưa xử lý job).
 - Stop Server không DROP lease, để mô phỏng crash và chờ lease hết hạn.
 - Worker crash mất toàn bộ trạng thái RAM, nằm ngoài phạm vi phục hồi.

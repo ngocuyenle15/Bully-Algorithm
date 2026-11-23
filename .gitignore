@@ -5,3 +5,5 @@
 .vscode/
 logs/
 runtime/
+docs/report/build/
+docs/report/__pycache__/

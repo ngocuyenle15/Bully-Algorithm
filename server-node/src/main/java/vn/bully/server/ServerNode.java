@@ -30,7 +30,10 @@ public final class ServerNode implements AutoCloseable {
     public final EventLog log;
     private final ServerSocket listener;
     private final ExecutorService connections = Executors.newVirtualThreadPerTaskExecutor();
+    /** Lease renewal / heartbeat. Must never be blocked by slow peers, otherwise the lease expires. */
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    /** Periodic GET_COORDINATOR probing of peers runs separately from lease renewal. */
+    private final ScheduledExecutorService prober = Executors.newSingleThreadScheduledExecutor();
     private final AtomicBoolean election = new AtomicBoolean();
     private final LinkedHashMap<String, TcpMessage> queue = new LinkedHashMap<>();
     private final ConcurrentMap<Integer, Boolean> alive = new ConcurrentHashMap<>();
@@ -38,9 +41,9 @@ public final class ServerNode implements AutoCloseable {
     private volatile int coordinatorId;
     private volatile long generation;
     private volatile long selfConflictUntilNanos;
-    private int failures, ticks;
+    private volatile int failures;
     private volatile String display = "Starting";
-    private long announcedGeneration = -1;
+    private volatile long announcedGeneration = -1;
 
     public ServerNode(Config config) throws IOException {
         id = config.number("id", 1);
@@ -88,6 +91,7 @@ public final class ServerNode implements AutoCloseable {
             : null;
         connections.submit(this::accept);
         scheduler.scheduleWithFixedDelay(this::tick, 0, heartbeatInterval, TimeUnit.MILLISECONDS);
+        prober.scheduleWithFixedDelay(this::probePeers, 2L * heartbeatInterval, 2L * heartbeatInterval, TimeUnit.MILLISECONDS);
         log.info("Server started id=" + id + " listening=" + listener.getLocalSocketAddress()
             + (discoveryEnabled ? " discovery-warmup-ms=" + warmup : " discovery=disabled"));
     }
@@ -144,6 +148,24 @@ public final class ServerNode implements AutoCloseable {
     private boolean idConflict() { return System.nanoTime() < selfConflictUntilNanos; }
     private void markWorkerReachable() { workerOkNanos = System.nanoTime(); workerOkEver = true; }
     private boolean workerHealthy() { return workerOkEver && System.nanoTime() - workerOkNanos <= workerHealthNanos; }
+    /**
+     * Bully: replying ELECTION_OK is a promise "I am alive and I will take over".
+     * A node may only make that promise when it can actually run (and win) its own election.
+     */
+    private boolean eligible() { return running && !warmingUp() && !idConflict() && workerHealthy(); }
+    /** Sends one message to many peers concurrently; total time is bounded by a single call timeout. */
+    private Map<Integer, TcpMessage> broadcast(List<NodeAddress> targets, MessageType type, Map<String, Object> payload) {
+        var calls = new LinkedHashMap<Integer, Future<TcpMessage>>();
+        for (var node : targets) calls.put(node.id(), connections.submit(() -> Wire.call(node,
+            Wire.message(type, UUID.randomUUID().toString(), Integer.toString(id), payload), heartbeatTimeout, bindAddress, 0)));
+        var replies = new LinkedHashMap<Integer, TcpMessage>();
+        for (var call : calls.entrySet()) {
+            try { replies.put(call.getKey(), call.getValue().get()); alive.put(call.getKey(), true); }
+            catch (ExecutionException e) { alive.put(call.getKey(), false); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+        }
+        return replies;
+    }
     /** Probes the Worker so the node knows whether it is eligible to become Coordinator. */
     private void probeWorker() {
         try { worker.status(); markWorkerReachable(); }
@@ -180,20 +202,24 @@ public final class ServerNode implements AutoCloseable {
         return Wire.message(type, r.requestId(), Integer.toString(id), data);
     }
     private TcpMessage coordinatorInfo(TcpMessage r) {
-        var address = node(coordinatorId);
-        if (address.isEmpty()) return answer(r, MessageType.ELECTION_IN_PROGRESS, Map.of());
-        return answer(r, MessageType.COORDINATOR_INFO, Map.of("id", coordinatorId,
-            "host", address.get().host(), "port", address.get().port(), "generation", generation));
+        int current = coordinatorId; long currentGeneration = generation;
+        var address = node(current);
+        if (current == 0 || address.isEmpty())
+            return answer(r, MessageType.ELECTION_IN_PROGRESS, Map.of("eligible", eligible()));
+        return answer(r, MessageType.COORDINATOR_INFO, Map.of("id", current,
+            "host", address.get().host(), "port", address.get().port(), "generation", currentGeneration,
+            "eligible", eligible()));
     }
     private TcpMessage handle(TcpMessage r) {
         if (idConflict()) return answer(r, MessageType.ELECTION_IN_PROGRESS, Map.of("error", "Duplicate server ID"));
         switch (r.type()) {
             case ELECTION -> {
                 if (Integer.parseInt(r.senderId()) >= id) return coordinatorInfo(r);
-                if (!workerHealthy()) {
-                    // Answering OK without being able to claim the Worker lease would block lower nodes forever.
-                    log.info("ELECTION received from=" + r.senderId() + "; Worker unreachable, not answering OK");
-                    return answer(r, MessageType.ELECTION_IN_PROGRESS, Map.of("error", "Worker unreachable"));
+                if (!eligible()) {
+                    // Answering OK without being able to run/win our own election (warming up, no Worker)
+                    // would make the lower candidate step back while nobody takes over.
+                    log.info("ELECTION received from=" + r.senderId() + "; not eligible (warm-up or Worker unreachable), not answering OK");
+                    return answer(r, MessageType.ELECTION_IN_PROGRESS, Map.of("error", "Not eligible", "eligible", false));
                 }
                 if (coordinator) {
                     // Already the winner: re-announce so lower nodes learn the result (Bully COORDINATOR message).
@@ -352,15 +378,13 @@ public final class ServerNode implements AutoCloseable {
             try {
                 log.info("Election started id=" + id + "; sending ELECTION to higher IDs");
                 boolean higher = false;
-                for (var node : activeNodes()) if (node.id() > id) {
-                    try {
-                        var response = Wire.call(node, Wire.message(MessageType.ELECTION, UUID.randomUUID().toString(), Integer.toString(id), Map.of()), heartbeatTimeout, bindAddress, 0);
-                        alive.put(node.id(), true);
-                        if (response.type() == MessageType.ELECTION_OK) {
-                            higher = true;
-                            log.info("ELECTION_OK (Answer) received from=" + node.id());
-                        }
-                    } catch (IOException e) { alive.put(node.id(), false); }
+                // Classic Bully: ELECTION goes to all higher IDs at once, so a dead host costs one timeout, not one per host.
+                var higherNodes = activeNodes().stream().filter(node -> node.id() > id).toList();
+                for (var reply : broadcast(higherNodes, MessageType.ELECTION, Map.of()).entrySet()) {
+                    if (reply.getValue().type() == MessageType.ELECTION_OK) {
+                        higher = true;
+                        log.info("ELECTION_OK (Answer) received from=" + reply.getKey());
+                    }
                 }
                 if (higher) {
                     // Only a current coordinator yields its lease. A follower keeps its known coordinatorId:
@@ -386,13 +410,11 @@ public final class ServerNode implements AutoCloseable {
         });
     }
     private void announce() {
-        for (var node : activeNodes()) if (node.id() != id) {
-            try { Wire.call(node, Wire.message(MessageType.COORDINATOR, UUID.randomUUID().toString(), Integer.toString(id),
-                Map.of("id", id, "generation", generation)), heartbeatTimeout, bindAddress, 0); }
-            catch (IOException ignored) { }
-        }
-        announcedGeneration = generation;
-        log.info("COORDINATOR announcement sent id=" + id + " generation=" + generation);
+        long announced = generation;
+        announcedGeneration = announced;
+        var peers = activeNodes().stream().filter(node -> node.id() != id).toList();
+        broadcast(peers, MessageType.COORDINATOR, Map.of("id", id, "generation", announced));
+        log.info("COORDINATOR announcement sent id=" + id + " generation=" + announced);
     }
     private void tick() {
         if (!running) return;
@@ -415,7 +437,10 @@ public final class ServerNode implements AutoCloseable {
                     if (!renewal.getAccepted()) { log.info("Coordinator lease lost"); demote(false); }
                     else { expireQueue(); pump(); }
                 }
-                if (coordinator && announcedGeneration != generation) announce();
+                if (coordinator && announcedGeneration != generation) {
+                    announcedGeneration = generation; // announce asynchronously: never delay lease renewal
+                    connections.submit(this::announce);
+                }
             } else if (!election.get()) {
                 if (coordinatorId == 0) startElection();
                 else {
@@ -437,29 +462,39 @@ public final class ServerNode implements AutoCloseable {
                     }
                 }
             }
-            if (++ticks % 2 == 0) {
-                for (var node : activeNodes()) if (node.id() != id) {
-                    try {
-                        var response = Wire.call(node, Wire.message(MessageType.GET_COORDINATOR, UUID.randomUUID().toString(), Integer.toString(id), Map.of()), heartbeatTimeout, bindAddress, 0);
-                        alive.put(node.id(), true);
-                        if (coordinator && node.id() > id) startElection();
-                        if (!coordinator && response.type() == MessageType.COORDINATOR_INFO) {
-                            int candidate = Wire.integer(response, "id");
-                            if (candidate < id) { if (!election.get()) startElection(); }
-                            // Adopt a higher coordinator even while electing, but only if it really holds the lease.
-                            else if (coordinatorId == 0 && holdsLease(candidate)) {
-                                coordinatorId = candidate; failures = 0;
-                                log.info("Coordinator changed id=" + candidate + " (learned from GET_COORDINATOR)");
-                            }
-                        }
-                    } catch (IOException e) { alive.put(node.id(), false); }
-                }
-            }
             render(coordinator ? "COORDINATOR" : !workerHealthy() ? "WORKER_UNREACHABLE" : election.get() ? "ELECTING" : "STANDBY");
         } catch (Exception e) {
             log.info("Server tick failed: " + e.getMessage());
             if (coordinator) demote(false);
         }
+    }
+    /**
+     * Membership/consistency probe (every 2 heartbeats, own thread, peers queried concurrently):
+     * - a Coordinator that sees an eligible higher ID starts an election so it can yield (Bully "bully" step);
+     * - a follower that sees a lower Coordinator starts an election to take over;
+     * - a follower without Coordinator adopts a higher one that the Worker confirms holds the lease.
+     */
+    private void probePeers() {
+        if (!running || warmingUp() || idConflict()) return;
+        try {
+            var peers = activeNodes().stream().filter(node -> node.id() != id).toList();
+            for (var reply : broadcast(peers, MessageType.GET_COORDINATOR, Map.of()).entrySet()) {
+                int peer = reply.getKey(); var response = reply.getValue();
+                boolean peerEligible = !Boolean.FALSE.equals(response.payload().get("eligible"));
+                if (coordinator) {
+                    if (peer > id && peerEligible) startElection();
+                    continue;
+                }
+                if (response.type() != MessageType.COORDINATOR_INFO) continue;
+                int candidate = Wire.integer(response, "id");
+                if (candidate < id) { if (!election.get()) startElection(); }
+                // Adopt a higher coordinator even while electing, but only if it really holds the lease.
+                else if (coordinatorId == 0 && holdsLease(candidate)) {
+                    coordinatorId = candidate; failures = 0;
+                    log.info("Coordinator changed id=" + candidate + " (learned from GET_COORDINATOR)");
+                }
+            }
+        } catch (Exception e) { if (running) log.info("Peer probe failed: " + e.getMessage()); }
     }
     private synchronized void render(String state) {
         var lines = new StringBuilder("Server " + id + " | " + state
@@ -477,7 +512,7 @@ public final class ServerNode implements AutoCloseable {
         running = false; // Simulated crash: do not drop lease; Worker must detect expiry.
         try { listener.close(); } catch (IOException ignored) { }
         if (discovery != null) discovery.close();
-        scheduler.shutdownNow(); connections.shutdownNow(); worker.close();
+        scheduler.shutdownNow(); prober.shutdownNow(); connections.shutdownNow(); worker.close();
         log.info("Server stopped id=" + id);
     }
 }

@@ -22,7 +22,8 @@ Có. Phần bầu cử tuân theo các quy tắc cốt lõi của Bully:
 6. Nếu đã nhận `ELECTION_OK`, node chờ `COORDINATOR`; hết thời gian chờ mà chưa có kết quả thì bầu lại.
 7. Khi node có ID lớn hơn chạy lại, nó tham gia bầu cử và cuối cùng giành lại vai trò Coordinator.
 8. Coordinator hiện tại nhận `ELECTION` từ node thấp hơn (ví dụ node thấp vừa khởi động lại) sẽ trả `ELECTION_OK` và **công bố lại** `COORDINATOR`, nên các node thấp hội tụ ngay thay vì bầu lại vô hạn.
-9. Node chỉ trả `ELECTION_OK` và chỉ tự ứng cử khi còn liên lạc được Worker. Node ID cao bị cắt khỏi Worker sẽ không chặn các node thấp hơn lên làm Coordinator.
+9. Node chỉ trả `ELECTION_OK` khi thực sự có thể tiếp quản: đã hết warm-up discovery, không trùng ID và còn liên lạc được Worker. Node ID cao đang khởi động hoặc bị cắt khỏi Worker sẽ không chặn các node thấp hơn lên làm Coordinator.
+10. `ELECTION`, `COORDINATOR` và thăm dò peer được gửi song song; việc thăm dò chạy ở luồng riêng nên máy chết (connect timeout) không làm trễ việc gia hạn lease của Coordinator.
 
 Trong source, ba thông điệp của đề tương ứng:
 
@@ -132,7 +133,7 @@ servers=1@192.168.0.101:9000,2@192.168.0.102:9000,3@192.168.0.103:9000,4@192.168
 worker=192.168.0.100:9100
 ```
 
-Client gửi `GET_COORDINATOR` lần lượt tới các server. Một server biết kết quả sẽ trả `COORDINATOR_INFO`; nếu cluster đang bầu cử, client nhận `ELECTION_IN_PROGRESS` và tiếp tục chờ.
+Client gửi `GET_COORDINATOR` song song tới mọi server và chọn `COORDINATOR_INFO` có `generation` lớn nhất (generation do Worker cấp, tăng đơn điệu), nên một server còn nhớ Coordinator đã chết không thể chỉ client tới node chết; nếu cluster đang bầu cử, client nhận `ELECTION_IN_PROGRESS` và tiếp tục chờ.
 
 Worker không tự discovery. Địa chỉ Worker vẫn được cấu hình thủ công tại cả Client và Server. `document-worker` chỉ mở cổng gRPC và chờ kết nối.
 
@@ -168,10 +169,9 @@ Bully/
 ├── client-node/       # Client JavaFX/headless
 ├── document-worker/   # Worker gRPC và PDF
 ├── server-node/       # Discovery, Bully và Coordinator
-├── docs/              # Đặc tả giao thức và kiểm thử
+├── docs/              # Đặc tả giao thức, kiểm thử và báo cáo Word (BaoCao_DoAn_Bully.docx)
 ├── logs/              # Log chạy ứng dụng
-├── run/               # CMD chạy bằng Java đóng gói
-├── runtime/           # JDK 21.0.10
+├── run/               # CMD chạy từng node theo ID/IP và mở firewall
 ├── scripts/           # Build, test và khởi động demo
 └── README.md
 ```
@@ -268,7 +268,9 @@ worker=192.168.0.100:9100
 
 ### 11.3. Mở tường lửa (Firewall) trên các máy trong LAN
 
-Trước khi chạy, mở PowerShell (quyền Administrator) trên các máy để cho phép kết nối LAN:
+Cách nhanh: chạy `run\setup-firewall.cmd worker` trên máy Worker và `run\setup-firewall.cmd server` trên 5 máy node (quyền Administrator; rule chỉ nhận nguồn `192.168.0.0/24`). Đặt network profile Windows là **Private**. IP các máy nên được gán bằng **DHCP reservation** trên router — nhiều router cấp dải động bắt đầu từ `.100`, dễ trùng với Worker.
+
+Hoặc làm thủ công: trước khi chạy, mở PowerShell (quyền Administrator) trên các máy để cho phép kết nối LAN:
 
 - **Tại máy Worker (`192.168.0.100`):**
   ```powershell
@@ -286,7 +288,7 @@ Trước khi chạy, mở PowerShell (quyền Administrator) trên các máy đ�
 ```powershell
 java -jar document-worker/target/document-worker-1.0.0-SNAPSHOT.jar --config document-worker/config/worker.properties
 ```
-*(Hoặc chạy `run\run-worker.cmd`).*
+*(Hoặc chạy `run\run-worker.cmd`; script cảnh báo nếu máy không có IP `192.168.0.100`).*
 
 #### Bước 2: Tại từng máy `192.168.0.101` → `192.168.0.105` — Khởi động Server Node
 Trên mỗi máy, mở một cửa sổ terminal và chạy đúng cấu hình của máy đó:
@@ -311,7 +313,7 @@ Trên mỗi máy, mở một cửa sổ terminal và chạy đúng cấu hình c
   ```powershell
   java -jar server-node/target/server-node-1.0.0-SNAPSHOT.jar --config server-node/config/server-5.properties
   ```
-*(Hoặc dùng `run\run-server.cmd <id>` với `<id>` từ `1` đến `5`).*
+*(Hoặc dùng `run\run-server.cmd <id>` với `<id>` từ `1` đến `5`. Bỏ trống `<id>` thì script tự suy ra ID từ IP `192.168.0.10x` của máy; script từ chối chạy nếu máy không có IP `192.168.0.10<id>` khớp với `bind-address` của cấu hình).*
 
 Sau khoảng 2.5 giây warm-up, 5 Server tự phát hiện nhau qua multicast `239.255.42.99:8999` và **Server 5 (`192.168.0.105:9000`)** được bầu làm **COORDINATOR**.
 
@@ -338,7 +340,7 @@ Trên mỗi máy đang chạy Server (kể cả máy `192.168.0.105` đang là C
   ```powershell
   java -jar client-node/target/client-node-1.0.0-SNAPSHOT.jar --config client-node/config/client-5.properties
   ```
-*(Hoặc dùng `run\run-client.cmd <id>` với `<id>` từ `1` đến `5`).*
+*(Hoặc dùng `run\run-client.cmd <id>` với `<id>` từ `1` đến `5`; bỏ trống thì tự suy ra từ IP máy).*
 
 Khi bấm `Stop Server` trên Server 5 (`192.168.0.105`), Server 4 (`192.168.0.104`) tự thắng bầu cử Bully lên làm Coordinator mới; đồng thời `Client 5` đang nằm trên máy `192.168.0.105` vẫn tiếp tục hoạt động bình thường và tự chuyển kết nối sang Server 4 (`192.168.0.104:9000`).
 
@@ -380,18 +382,15 @@ PDF chỉ là tài nguyên minh họa. Trọng tâm đồ án là Bully election
 powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 -Integration -Ui
 ```
 
-| Nhóm | Số test | Nội dung |
+| Bộ test | Số test | Nội dung |
 |---|---:|---|
-| Config | 9 | UTF-8, CLI override, bind/port, multicast và ID |
-| Bully/cluster/discovery | 10 | Vòng bầu cử, Answer/Coordinator, timeout, node phục hồi, ID trùng và membership động |
-| Client và lưu kết quả | 3 | Retry giữ nguyên request, cancel/release và ghi file an toàn |
-| WorkerState | 10 | Lease, generation, token, timeout và request đồng thời |
-| PDF | 5 | Merge, Split, Watermark và giới hạn dữ liệu |
-| Integration đa JVM | 4 | Discovery không seed, FIFO, failover, restart, retry và client recovery |
-| JavaFX | 3 | Mở/render Server, Client và Worker |
-| Window sizing | 12 | DPI, taskbar, nhiều màn hình và giới hạn cửa sổ |
+| `ConfigTest` (server/client/worker) | 3 × 3 | UTF-8, CLI override, bind/port, multicast và ID |
+| `WorkerStateTest` | 11 | Lease, generation, fencing, re-claim của chủ lease, token, timeout và request đồng thời |
+| `PdfServiceTest` | 5 | Merge, Split, Watermark và giới hạn dữ liệu |
+| `DistributedIntegrationTest` (đa JVM) | 7 | Discovery không seed, FIFO, failover, restart node cao, node thấp restart không gây bầu vô hạn, node cao mất Worker không chặn bầu cử, client recovery, client chờ bị ngắt |
+| `*ViewTest` (JavaFX) | 3 | Mở/render Server, Client và Worker (chỉ chạy với `-Ui`, cần màn hình) |
 
-Tổng cộng 56 test riêng biệt, 0 failure, 0 error và 0 skipped trong lần xác nhận ngày 08/11/2026. Báo cáo nằm trong `target/surefire-reports/`; log integration nằm trong `document-worker/target/integration-*`.
+Tổng cộng 35 test. Lần xác nhận ngày 23/11/2026 (`build.ps1 -Integration`): 32 test không cần giao diện đều đạt, 0 failure, 0 error; 3 test JavaFX bỏ qua khi không bật `-Ui`. Báo cáo nằm trong `target/surefire-reports/`; log integration nằm trong `document-worker/target/integration-*`.
 
 ## 15. Kịch bản bảo vệ đề tài (trên mạng LAN 5 Node)
 

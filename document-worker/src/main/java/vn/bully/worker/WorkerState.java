@@ -48,7 +48,10 @@ public final class WorkerState {
         expire(); long now = clock.getAsLong();
         if (r.getAction().equals("CLAIM")) {
             if (r.getCoordinatorId() <= 0) return reply(false, "Invalid coordinator", false);
-            if (leaseUntil > now) return reply(false, "Coordinator lease is occupied", false);
+            // The current holder may re-claim (e.g. after a timed-out RENEW): generation still increases,
+            // so anything issued under the old generation is fenced off.
+            if (leaseUntil > now && r.getCoordinatorId() != coordinator)
+                return reply(false, "Coordinator lease is occupied", false);
             coordinator = r.getCoordinatorId(); generation++; leaseUntil = now + leaseMs;
             log.info("Coordinator accepted id=" + coordinator + " generation=" + generation);
             return reply(true, "", false);

@@ -49,6 +49,11 @@ class WorkerStateTest {
     @Test void anotherCoordinatorCannotClaimValidLease() {
         assertFalse(state.control(ControlRequest.newBuilder().setAction("CLAIM").setCoordinatorId(2).build()).getAccepted());
     }
+    @Test void holderCanReclaimAndOldGenerationIsFenced() {
+        var reclaim = state.control(ControlRequest.newBuilder().setAction("CLAIM").setCoordinatorId(3).build());
+        assertTrue(reclaim.getAccepted()); assertEquals(generation + 1, reclaim.getGeneration());
+        assertFalse(state.control(control("RENEW").build()).getAccepted()); // old generation rejected
+    }
     @Test void jobLongerThanTimeoutKeepsSessionAndResetsIdleTimer() {
         var s = reserve("a", "r"); state.begin(job(s), "Merge"); clock.addAndGet(90000);
         assertEquals("PROCESSING", state.status().getWorkerStatus()); state.finish();

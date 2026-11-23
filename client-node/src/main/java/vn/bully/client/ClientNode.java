@@ -18,6 +18,8 @@ public final class ClientNode implements AutoCloseable {
     private final InetAddress bindAddress;
     private final int localPort;
     private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor();
+    /** Concurrent lookups; with a fixed local-port only one socket can use it at a time, so stay sequential. */
+    private final ExecutorService lookups;
     public final EventLog log;
     private volatile NodeAddress coordinator;
     private String request = "", session = "", token = "", command = "", state = "IDLE", connection = "CONNECTING";
@@ -29,6 +31,7 @@ public final class ClientNode implements AutoCloseable {
     public ClientNode(Config config) {
         id = config.get("id", UUID.randomUUID().toString()); username = config.get("username", "Client " + id);
         bindAddress = config.bindAddress(); localPort = config.port("local-port", 0, true);
+        lookups = localPort == 0 ? Executors.newVirtualThreadPerTaskExecutor() : Executors.newSingleThreadExecutor();
         servers = config.nodes(); worker = new WorkerClient(config.worker(), bindAddress, config.port("grpc-local-port", 0, true));
         log = new EventLog("Client-" + id);
         log.info("Client network interface=" + bindAddress.getHostAddress() + " TCP local-port=" + localPort);
@@ -49,15 +52,29 @@ public final class ClientNode implements AutoCloseable {
     public synchronized void releaseAccess() {
         if (!session.isEmpty() && !processing) { command = "RELEASE"; state = "RELEASING"; }
     }
+    /**
+     * Asks every configured server concurrently and trusts the answer with the highest Worker generation.
+     * Generation is issued by the Worker and only grows, so a server that still remembers a dead
+     * Coordinator (stale view during failover) cannot redirect the client to it.
+     */
     private NodeAddress discover() {
-        for (var server : servers) {
+        var calls = new ArrayList<Future<TcpMessage>>();
+        for (var server : servers) calls.add(lookups.submit(() -> Wire.call(server,
+            Wire.message(MessageType.GET_COORDINATOR, UUID.randomUUID().toString(), id, Map.of()), 700, bindAddress, localPort)));
+        NodeAddress best = null; long bestGeneration = -1;
+        for (var call : calls) {
             try {
-                var response = Wire.call(server, Wire.message(MessageType.GET_COORDINATOR, UUID.randomUUID().toString(), id, Map.of()), 700, bindAddress, localPort);
-                if (response.type() == MessageType.COORDINATOR_INFO)
-                    return new NodeAddress(Wire.integer(response, "id"), Wire.string(response, "host"), Wire.integer(response, "port"));
-            } catch (IOException ignored) { }
+                var response = call.get();
+                if (response.type() != MessageType.COORDINATOR_INFO) continue;
+                long generation = Long.parseLong(Wire.string(response, "generation").isEmpty() ? "0" : Wire.string(response, "generation"));
+                if (generation > bestGeneration) {
+                    bestGeneration = generation;
+                    best = new NodeAddress(Wire.integer(response, "id"), Wire.string(response, "host"), Wire.integer(response, "port"));
+                }
+            } catch (ExecutionException ignored) {
+            } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
         }
-        return null;
+        return best;
     }
     private void tick() {
         if (!running) return;
@@ -152,5 +169,5 @@ public final class ClientNode implements AutoCloseable {
             log.info("Completed " + operation); return reply.getContent().toByteArray();
         } finally { synchronized (this) { processing = false; state = session.isEmpty() ? "IDLE" : command.isEmpty() ? "ACTIVE" : "RELEASING"; } }
     }
-    @Override public void close() { running = false; timer.shutdownNow(); worker.close(); }
+    @Override public void close() { running = false; timer.shutdownNow(); lookups.shutdownNow(); worker.close(); }
 }
