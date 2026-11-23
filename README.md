@@ -21,6 +21,8 @@ Có. Phần bầu cử tuân theo các quy tắc cốt lõi của Bully:
 5. Node thắng gửi `COORDINATOR` để thông báo kết quả.
 6. Nếu đã nhận `ELECTION_OK`, node chờ `COORDINATOR`; hết thời gian chờ mà chưa có kết quả thì bầu lại.
 7. Khi node có ID lớn hơn chạy lại, nó tham gia bầu cử và cuối cùng giành lại vai trò Coordinator.
+8. Coordinator hiện tại nhận `ELECTION` từ node thấp hơn (ví dụ node thấp vừa khởi động lại) sẽ trả `ELECTION_OK` và **công bố lại** `COORDINATOR`, nên các node thấp hội tụ ngay thay vì bầu lại vô hạn.
+9. Node chỉ trả `ELECTION_OK` và chỉ tự ứng cử khi còn liên lạc được Worker. Node ID cao bị cắt khỏi Worker sẽ không chặn các node thấp hơn lên làm Coordinator.
 
 Trong source, ba thông điệp của đề tương ứng:
 

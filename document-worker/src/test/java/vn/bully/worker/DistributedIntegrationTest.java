@@ -60,11 +60,12 @@ class DistributedIntegrationTest {
             }, 5000);
         }
     }
-    private void startServer(int id) throws Exception {
+    private void startServer(int id) throws Exception { startServer(id, "127.0.0.1:" + workerPort); }
+    private void startServer(int id, String workerAddress) throws Exception {
         String name = "server-" + id + "-" + processes.size();
         serverLogs.put(id, logs.resolve(name + ".log"));
         serverProcesses.put(id, launch("server-node", name,
-            "--id", "" + id, "--port", "" + nodes.get(id - 1).port(), "--worker", "127.0.0.1:" + workerPort,
+            "--id", "" + id, "--port", "" + nodes.get(id - 1).port(), "--worker", workerAddress,
             "--cluster-id", clusterId, "--discovery-group", "239.255.42.99", "--discovery-port", "" + discoveryPort,
             "--discovery-interval-ms", "100", "--discovery-timeout-ms", "700", "--discovery-warmup-ms", "400",
             "--heartbeat-ms", "200", "--heartbeat-timeout-ms", "200", "--heartbeat-failures", "3", "--election-ms", "300"));
@@ -203,5 +204,48 @@ class DistributedIntegrationTest {
         clients.get(before.getClientId()).destroyForcibly();
         await(() -> !worker.status().getClientId().isEmpty() && !worker.status().getClientId().equals(before.getClientId()), 20000);
         assertTrue(clients.containsKey(worker.status().getClientId()));
+    }
+
+    private int viewOf(int server) {
+        var response = call(server, MessageType.GET_COORDINATOR, "probe", UUID.randomUUID().toString(), Map.of());
+        return response.type() == MessageType.COORDINATOR_INFO ? Wire.integer(response, "id") : 0;
+    }
+    /** Every listed server must report the expected coordinator continuously for the given time. */
+    private void assertStableView(int expected, long millis, int... servers) throws Exception {
+        long end = System.nanoTime() + millis * 1_000_000;
+        while (System.nanoTime() < end) {
+            for (int server : servers) assertEquals(expected, viewOf(server), "server " + server + " view");
+            assertEquals(expected, worker.status().getCoordinatorId());
+            Thread.sleep(150);
+        }
+    }
+
+    @Test void lowerNodeRestartDoesNotCauseEndlessElection() throws Exception {
+        // Regression: a restarted low ID used to make followers drop C3 and re-elect forever.
+        killServer(1); startServer(1);
+        await(() -> viewOf(1) == 3 && viewOf(2) == 3, 8000);
+        assertStableView(3, 3000, 1, 2, 3);
+    }
+
+    @Test void highestNodeWithoutWorkerDoesNotBlockElection() throws Exception {
+        // Regression: server 3 alive on TCP but cut off from the Worker used to answer ELECTION_OK forever.
+        killServer(3); startServer(3, "127.0.0.1:1");
+        awaitCoordinator(2);
+        await(() -> viewOf(1) == 2, 8000);
+        assertStableView(2, 3000, 1, 2);
+        var granted = request(2, "still-served");
+        assertEquals(MessageType.ACCESS_GRANTED, granted.type());
+    }
+
+    @Test void disconnectedQueuedClientDoesNotBlockQueue() throws Exception {
+        var a = request(3, "holder"); assertEquals(MessageType.ACCESS_GRANTED, a.type());
+        assertEquals(MessageType.ACCESS_QUEUED, request(3, "dead").type()); // never polls again
+        assertEquals(MessageType.ACCESS_QUEUED, request(3, "waiting").type());
+        release(3, "holder", a);
+        long start = System.nanoTime();
+        await(() -> request(3, "waiting").type() == MessageType.ACCESS_GRANTED, 8000);
+        long waited = (System.nanoTime() - start) / 1_000_000;
+        assertTrue(waited < 8000, "waiting client must not wait for the dead client's session timeout (10 s)");
+        assertEquals("waiting", worker.status().getClientId());
     }
 }
