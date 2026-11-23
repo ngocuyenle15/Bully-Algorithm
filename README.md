@@ -56,31 +56,33 @@ Worker tuần tự hóa mọi thay đổi trạng thái và chỉ cho phép tố
 ## 3. Kiến trúc và giao thức
 
 ```text
-                  UDP multicast discovery
-            ┌──────────┬──────────┬──────────┐
-            │ Server 1 │ Server 2 │ Server 3 │
-            │   ID 1   │   ID 2   │   ID 3   │
-            └──────────┴──────────┴──────────┘
-                   TCP Bully / heartbeat
-                            │
-Client ───── TCP ─────> Coordinator ───── gRPC ─────> Worker
-Client ─────────────────────── gRPC ─────────────────> Worker
+                             UDP multicast discovery (239.255.42.99:8999)
+             ┌──────────────┬──────────────┬──────────────┬──────────────┬──────────────┐
+             │   Server 1   │   Server 2   │   Server 3   │   Server 4   │   Server 5   │
+             │ 192.168.0.101│ 192.168.0.102│ 192.168.0.103│ 192.168.0.104│ 192.168.0.105│
+             │  ID 1 :9000  │  ID 2 :9000  │  ID 3 :9000  │  ID 4 :9000  │  ID 5 :9000  │
+             │ (+ Client 1) │ (+ Client 2) │ (+ Client 3) │ (+ Client 4) │ (+ Client 5) │
+             └──────────────┴──────────────┴──────────────┴──────────────┴──────────────┘
+                                       TCP Bully / heartbeat (:9000)
+                                                    │
+Client (bất kỳ máy) ───── TCP (:9000) ────> Coordinator (Server 5) ───── gRPC (:9100) ────> Worker (192.168.0.100)
+Client (bất kỳ máy) ──────────────────────────────────────────────────── gRPC (:9100) ────> Worker (192.168.0.100)
 ```
 
 | Kết nối | Giao thức | Chức năng |
 |---|---|---|
-| Server ↔ Server | UDP multicast | Tự tìm ID, IP và TCP port của peer |
-| Server ↔ Server | TCP JSON | Bully, heartbeat và đồng bộ Coordinator |
-| Client ↔ Server | TCP JSON | Tìm Coordinator, xin/hủy/trả quyền |
-| Server ↔ Worker | gRPC | Lease, generation, reserve và release session |
-| Client ↔ Worker | gRPC | Kiểm tra session và xử lý PDF |
+| Server ↔ Server | UDP multicast (`:8999`) | Tự tìm ID, IP và TCP port của peer |
+| Server ↔ Server | TCP JSON (`:9000`) | Bully, heartbeat và đồng bộ Coordinator |
+| Client ↔ Server | TCP JSON (`:9000`) | Tìm Coordinator, xin/hủy/trả quyền |
+| Server ↔ Worker | gRPC (`:9100`) | Lease, generation, reserve và release session |
+| Client ↔ Worker | gRPC (`:9100`) | Kiểm tra session và xử lý PDF |
 
 ## 4. Các server tìm nhau như thế nào?
 
 Mỗi server phát định kỳ `SERVER_HELLO` tới multicast group:
 
 ```json
-{"version":1,"clusterId":"bully-demo","type":"SERVER_HELLO","nodeId":3,"tcpPort":9003,"bootId":"uuid"}
+{"version":1,"clusterId":"bully-demo","type":"SERVER_HELLO","nodeId":5,"tcpPort":9000,"bootId":"uuid"}
 ```
 
 Server nhận lấy IP trực tiếp từ địa chỉ nguồn UDP, không tin IP trong payload. Membership động lưu ID, địa chỉ, `bootId` và thời điểm `lastSeen`.
@@ -126,8 +128,8 @@ Nếu Server 3 chạy lại, discovery tìm thấy ID 3. Vì 3 lớn hơn Coordi
 Client không tham gia Bully và hiện không dùng multicast. Client vẫn giữ danh sách địa chỉ server trong cấu hình:
 
 ```properties
-servers=1@192.168.1.11:9001,2@192.168.1.12:9002,3@192.168.1.13:9003
-worker=192.168.1.10:9100
+servers=1@192.168.0.101:9000,2@192.168.0.102:9000,3@192.168.0.103:9000,4@192.168.0.104:9000,5@192.168.0.105:9000
+worker=192.168.0.100:9100
 ```
 
 Client gửi `GET_COORDINATOR` lần lượt tới các server. Một server biết kết quả sẽ trả `COORDINATOR_INFO`; nếu cluster đang bầu cử, client nhận `ELECTION_IN_PROGRESS` và tiếp tục chờ.
@@ -194,38 +196,44 @@ mvn -f document-worker/pom.xml clean package
 
 Fat JAR được tạo trong thư mục `target/` của từng project với tên `<project>-1.0.0-SNAPSHOT.jar`.
 
-## 11. Chạy demo trên một máy
+## 11. Triển khai và vận hành cụm trên mạng LAN (`192.168.0.0/24`)
 
-Build trước, sau đó mở các lệnh trong các cửa sổ riêng theo thứ tự:
+Giả sử hệ thống chạy trong mạng LAN **`192.168.0.0/24`**, các máy đã được DHCP/DNS cấp sẵn địa chỉ IP cố định và phân bổ dịch vụ như sau:
 
-```cmd
-run\run-worker.cmd
-run\run-server.cmd 1
-run\run-server.cmd 2
-run\run-server.cmd 3
-run\run-client.cmd 1
-run\run-client.cmd 2
-run\run-client.cmd 3
+- **1 máy chạy `document-worker`** (`192.168.0.100`).
+- **5 máy chạy `server-node`** (`192.168.0.101` → `192.168.0.105`), tương ứng Bully ID `1` → `5`. Vì mỗi Server nằm trên một IP riêng nên tất cả dùng chung port TCP **`9000`**.
+- **`client-node` chạy trực tiếp ngay trên cùng các máy với `server-node`** (bao gồm cả máy `192.168.0.105` đang làm Coordinator). Client không mở cổng lắng nghe mà dùng cổng tạm thời (`local-port=0`) để kết nối đi ra, nên hoàn toàn không xung đột port với `server-node` trên cùng máy.
+
+### 11.1. Bảng quy hoạch IP và dịch vụ trong LAN
+
+| Máy | Địa chỉ IP (DHCP/DNS cấp sẵn) | Dịch vụ chạy trên máy | Cổng lắng nghe | File cấu hình sử dụng |
+|---|---|---|---|---|
+| **Worker Host** | `192.168.0.100` | `document-worker` | TCP `9100` (gRPC) | `document-worker/config/worker.properties` |
+| **Node 1** | `192.168.0.101` | `server-node` (ID=1) + `client-node` (client-1) | TCP `9000`, UDP `8999` | `server-1.properties`, `client-1.properties` |
+| **Node 2** | `192.168.0.102` | `server-node` (ID=2) + `client-node` (client-2) | TCP `9000`, UDP `8999` | `server-2.properties`, `client-2.properties` |
+| **Node 3** | `192.168.0.103` | `server-node` (ID=3) + `client-node` (client-3) | TCP `9000`, UDP `8999` | `server-3.properties`, `client-3.properties` |
+| **Node 4** | `192.168.0.104` | `server-node` (ID=4) + `client-node` (client-4) | TCP `9000`, UDP `8999` | `server-4.properties`, `client-4.properties` |
+| **Node 5 (Coordinator)** | `192.168.0.105` | `server-node` (ID=5) + `client-node` (client-5) | TCP `9000`, UDP `8999` | `server-5.properties`, `client-5.properties` |
+
+*(Ghi chú: Nếu chỉ có 5 máy vật lý, `document-worker` cũng có thể chạy chung luôn trên một trong 5 máy `192.168.0.101..105` vì port `9100` tách biệt với `9000` và `8999`).*
+
+### 11.2. Cấu hình chi tiết từng thành phần (đã khai báo sẵn trong `config/`)
+
+#### a) Cấu hình Document Worker (`document-worker/config/worker.properties` tại `192.168.0.100`)
+```properties
+bind-address=0.0.0.0
+port=9100
+lease-ms=5000
+session-ms=60000
 ```
 
-Các CMD sử dụng `runtime/jdk-21.0.10` và tự xác định thư mục project, nên có thể double-click. Nếu không truyền số, server/client mặc định dùng cấu hình số 1.
-
-Có thể mở toàn bộ demo bằng:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\start-demo.ps1
-```
-
-Nút `Stop Server` mô phỏng crash: server không chủ động trả lease, buộc cluster phát hiện lỗi và chờ lease hết hạn.
-
-## 12. Chạy trên nhiều máy LAN
-
-Ví dụ Server 1:
+#### b) Cấu hình 5 Server Node (`server-node/config/server-1.properties` → `server-5.properties`)
+Mỗi máy `i` (`i = 1..5`) dùng file `server-i.properties` tương ứng. Tất cả 5 file có chung cấu hình cluster, chỉ khác `bind-address` (`192.168.0.101` → `192.168.0.105`) và `id` (`1` → `5`). Ví dụ `server-5.properties` trên máy `192.168.0.105`:
 
 ```properties
-bind-address=192.168.1.11
-id=1
-port=9001
+bind-address=192.168.0.105
+id=5
+port=9000
 cluster-id=bully-demo
 discovery-enabled=true
 discovery-group=239.255.42.99
@@ -233,18 +241,128 @@ discovery-port=8999
 discovery-interval-ms=1000
 discovery-timeout-ms=5000
 discovery-warmup-ms=2500
-worker=192.168.1.10:9100
+worker=192.168.0.100:9100
+heartbeat-ms=1000
+heartbeat-timeout-ms=1000
+heartbeat-failures=3
+election-ms=2000
+queue-timeout-ms=3000
 ```
 
-Server 2 và 3 chỉ thay `bind-address`, `id` và `port`. Tất cả server phải có cùng `cluster-id`, multicast group, discovery port và Worker address.
+- `bind-address` đặt đúng IP card mạng LAN (`192.168.0.10x`) để MulticastSocket gắn đúng interface LAN và công bố đúng IP nguồn cho các node khác.
+- Nếu mạng switch/Wi-Fi chặn gói UDP multicast `239.255.42.99:8999`, có thể thêm dòng seed dự phòng vào mỗi file `server-i.properties`:
+  `servers=1@192.168.0.101:9000,2@192.168.0.102:9000,3@192.168.0.103:9000,4@192.168.0.104:9000,5@192.168.0.105:9000`
 
-| Cổng | Giao thức | Thành phần |
-|---|---|---|
-| 8999 | UDP multicast | Server discovery |
-| 9001–9003 | TCP | Server/Bully/Client request |
-| 9100 | TCP gRPC | Document Worker |
+#### c) Cấu hình 5 Client Node chạy chung trên các máy Server (`client-node/config/client-1.properties` → `client-5.properties`)
+Ví dụ `client-5.properties` (chạy ngay trên máy `192.168.0.105` cùng với Coordinator Server 5):
 
-Client vẫn phải cấu hình danh sách IP server và Worker thực tế. Không dùng `0.0.0.0` làm địa chỉ đích. Với máy nhiều card mạng, nên đặt `bind-address` thành IP card LAN cụ thể để multicast đi đúng interface.
+```properties
+bind-address=0.0.0.0
+local-port=0
+grpc-local-port=0
+id=client-5
+username=Client 5
+servers=1@192.168.0.101:9000,2@192.168.0.102:9000,3@192.168.0.103:9000,4@192.168.0.104:9000,5@192.168.0.105:9000
+worker=192.168.0.100:9100
+```
+
+### 11.3. Mở tường lửa (Firewall) trên các máy trong LAN
+
+Trước khi chạy, mở PowerShell (quyền Administrator) trên các máy để cho phép kết nối LAN:
+
+- **Tại máy Worker (`192.168.0.100`):**
+  ```powershell
+  New-NetFirewallRule -DisplayName "Bully-Worker-gRPC" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 9100
+  ```
+- **Tại 5 máy Node 1 → Node 5 (`192.168.0.101` → `192.168.0.105`):**
+  ```powershell
+  New-NetFirewallRule -DisplayName "Bully-Server-TCP" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 9000
+  New-NetFirewallRule -DisplayName "Bully-Discovery-UDP" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 8999
+  ```
+
+### 11.4. Các bước khởi động từng máy
+
+#### Bước 1: Tại máy `192.168.0.100` — Khởi động Document Worker
+```powershell
+java -jar document-worker/target/document-worker-1.0.0-SNAPSHOT.jar --config document-worker/config/worker.properties
+```
+*(Hoặc chạy `run\run-worker.cmd`).*
+
+#### Bước 2: Tại từng máy `192.168.0.101` → `192.168.0.105` — Khởi động Server Node
+Trên mỗi máy, mở một cửa sổ terminal và chạy đúng cấu hình của máy đó:
+
+- **Trên máy `192.168.0.101` (Node 1):**
+  ```powershell
+  java -jar server-node/target/server-node-1.0.0-SNAPSHOT.jar --config server-node/config/server-1.properties
+  ```
+- **Trên máy `192.168.0.102` (Node 2):**
+  ```powershell
+  java -jar server-node/target/server-node-1.0.0-SNAPSHOT.jar --config server-node/config/server-2.properties
+  ```
+- **Trên máy `192.168.0.103` (Node 3):**
+  ```powershell
+  java -jar server-node/target/server-node-1.0.0-SNAPSHOT.jar --config server-node/config/server-3.properties
+  ```
+- **Trên máy `192.168.0.104` (Node 4):**
+  ```powershell
+  java -jar server-node/target/server-node-1.0.0-SNAPSHOT.jar --config server-node/config/server-4.properties
+  ```
+- **Trên máy `192.168.0.105` (Node 5 — Coordinator):**
+  ```powershell
+  java -jar server-node/target/server-node-1.0.0-SNAPSHOT.jar --config server-node/config/server-5.properties
+  ```
+*(Hoặc dùng `run\run-server.cmd <id>` với `<id>` từ `1` đến `5`).*
+
+Sau khoảng 2.5 giây warm-up, 5 Server tự phát hiện nhau qua multicast `239.255.42.99:8999` và **Server 5 (`192.168.0.105:9000`)** được bầu làm **COORDINATOR**.
+
+#### Bước 3: Ngay trên các máy `192.168.0.101` → `192.168.0.105` — Khởi động Client Node cùng máy với Server
+Trên mỗi máy đang chạy Server (kể cả máy `192.168.0.105` đang là Coordinator), mở thêm một cửa sổ terminal thứ hai và chạy Client tương ứng:
+
+- **Trên máy `192.168.0.101` (cùng máy Server 1):**
+  ```powershell
+  java -jar client-node/target/client-node-1.0.0-SNAPSHOT.jar --config client-node/config/client-1.properties
+  ```
+- **Trên máy `192.168.0.102` (cùng máy Server 2):**
+  ```powershell
+  java -jar client-node/target/client-node-1.0.0-SNAPSHOT.jar --config client-node/config/client-2.properties
+  ```
+- **Trên máy `192.168.0.103` (cùng máy Server 3):**
+  ```powershell
+  java -jar client-node/target/client-node-1.0.0-SNAPSHOT.jar --config client-node/config/client-3.properties
+  ```
+- **Trên máy `192.168.0.104` (cùng máy Server 4):**
+  ```powershell
+  java -jar client-node/target/client-node-1.0.0-SNAPSHOT.jar --config client-node/config/client-4.properties
+  ```
+- **Trên máy `192.168.0.105` (cùng máy Coordinator Server 5):**
+  ```powershell
+  java -jar client-node/target/client-node-1.0.0-SNAPSHOT.jar --config client-node/config/client-5.properties
+  ```
+*(Hoặc dùng `run\run-client.cmd <id>` với `<id>` từ `1` đến `5`).*
+
+Khi bấm `Stop Server` trên Server 5 (`192.168.0.105`), Server 4 (`192.168.0.104`) tự thắng bầu cử Bully lên làm Coordinator mới; đồng thời `Client 5` đang nằm trên máy `192.168.0.105` vẫn tiếp tục hoạt động bình thường và tự chuyển kết nối sang Server 4 (`192.168.0.104:9000`).
+
+---
+
+## 12. Chạy gom toàn bộ 5 Server + 5 Client trên một máy duy nhất (Localhost)
+
+Khi muốn test nhanh toàn bộ 11 tiến trình trên **1 máy duy nhất (`127.0.0.1`)**, chỉ cần ghi đè `--bind-address 127.0.0.1` và cấp 5 port khác nhau (`9001..9005`) qua tham số dòng lệnh mà không cần sửa lại file `.properties`:
+
+```powershell
+# 1. Worker
+Start-Process java -ArgumentList '-jar','document-worker/target/document-worker-1.0.0-SNAPSHOT.jar','--bind-address','127.0.0.1','--port','9100'
+
+# 2. 5 Server (ID 1..5 trên port 9001..9005)
+1..5 | ForEach-Object {
+    Start-Process java -ArgumentList '-jar','server-node/target/server-node-1.0.0-SNAPSHOT.jar','--config',"server-node/config/server-$_.properties",'--bind-address','127.0.0.1','--port',(9000 + $_),'--worker','127.0.0.1:9100'
+}
+
+# 3. 5 Client
+$localServers = '1@127.0.0.1:9001,2@127.0.0.1:9002,3@127.0.0.1:9003,4@127.0.0.1:9004,5@127.0.0.1:9005'
+1..5 | ForEach-Object {
+    Start-Process java -ArgumentList '-jar','client-node/target/client-node-1.0.0-SNAPSHOT.jar','--config',"client-node/config/client-$_.properties",'--servers',$localServers,'--worker','127.0.0.1:9100'
+}
+```
 
 ## 13. Xử lý PDF
 
@@ -275,15 +393,17 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 -Integration -Ui
 
 Tổng cộng 56 test riêng biệt, 0 failure, 0 error và 0 skipped trong lần xác nhận ngày 08/11/2026. Báo cáo nằm trong `target/surefire-reports/`; log integration nằm trong `document-worker/target/integration-*`.
 
-## 15. Kịch bản bảo vệ đề tài
+## 15. Kịch bản bảo vệ đề tài (trên mạng LAN 5 Node)
 
-1. Khởi động Worker và ba Server; quan sát Server 3 được bầu.
-2. Cho ba Client xin quyền; xác nhận một client được cấp, hai client chờ FIFO.
-3. Dừng Server 3; quan sát heartbeat timeout, `ELECTION`, `ELECTION_OK`, Server 2 claim lease và phát `COORDINATOR`.
-4. Xác nhận client đang giữ quyền vẫn dùng session cũ.
-5. Release client hiện tại; client kế tiếp được cấp.
-6. Khởi động lại Server 3; discovery tìm thấy ID cao hơn và Server 3 giành lại Coordinator.
-7. Dừng client đang giữ quyền; sau session timeout, client kế tiếp được cấp.
+1. Khởi động Worker (`192.168.0.100:9100`) và 5 Server (`192.168.0.101..105:9000`); quan sát **Server 5** được bầu làm Coordinator.
+2. Mở các Client nằm ngay trên các máy Server (bao gồm Client 5 nằm chung máy với Coordinator Server 5) và bấm **Request Access**; xác nhận đúng một client được cấp quyền (`ACTIVE`), các client còn lại xếp hàng FIFO (`QUEUED`).
+3. Dừng **Server 5**; quan sát heartbeat timeout, `ELECTION`, `ELECTION_OK`, **Server 4 (`192.168.0.104`)** claim lease và phát `COORDINATOR`. Client 5 trên máy `192.168.0.105` tự chuyển sang gọi Server 4.
+4. Xác nhận client đang giữ quyền vẫn tiếp tục xử lý PDF bằng session cũ.
+5. Release client hiện tại; client kế tiếp trong hàng đợi được cấp quyền.
+6. Khởi động lại **Server 5** (`192.168.0.105`); discovery tìm thấy ID 5 cao hơn và Server 5 giành lại vai trò Coordinator từ Server 4.
+7. Dừng một client đang xếp hàng hoặc đang giữ quyền:
+   - Nếu client đang xếp hàng bị tắt: sau `queue-timeout-ms` (3 giây), Coordinator tự loại khỏi hàng đợi để không chặn client phía sau.
+   - Nếu client đang giữ quyền bị tắt: sau `session-ms` (60 giây), Worker thu hồi phiên và cấp cho client kế tiếp.
 
 Các log quan trọng: `Discovery started`, `Discovered server`, `ELECTION`, `ELECTION_OK (Answer)`, `COORDINATOR`, heartbeat timeout, generation và session grant/release.
 

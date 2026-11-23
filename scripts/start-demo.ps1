@@ -9,9 +9,13 @@ $applications = @(
     @{ Project = 'server-node'; Config = 'server-1' },
     @{ Project = 'server-node'; Config = 'server-2' },
     @{ Project = 'server-node'; Config = 'server-3' },
+    @{ Project = 'server-node'; Config = 'server-4' },
+    @{ Project = 'server-node'; Config = 'server-5' },
     @{ Project = 'client-node'; Config = 'client-1' },
     @{ Project = 'client-node'; Config = 'client-2' },
-    @{ Project = 'client-node'; Config = 'client-3' }
+    @{ Project = 'client-node'; Config = 'client-3' },
+    @{ Project = 'client-node'; Config = 'client-4' },
+    @{ Project = 'client-node'; Config = 'client-5' }
 )
 # Check all artifacts before opening any processes.
 foreach ($app in $applications) {
